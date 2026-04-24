@@ -1,20 +1,20 @@
-package types
+package crdt
 
 type UUID uint64
 
 type ID struct {
-	UserID UUID
+	UserID    UUID
 	OpCounter uint32
 }
 
 type YataItem struct {
 	id          ID
-    left        ID
-    right       ID
-    originLeft  ID
-    originRight ID
-    deleted     bool
-	content 	any
+	left        ID
+	right       ID
+	originLeft  ID
+	originRight ID
+	deleted     bool
+	content     any
 }
 
 type YataStateVector []ID
@@ -25,4 +25,3 @@ type YataType interface {
 	EncodeStateVector() []byte
 	EncodeStateAsUpdate(encodedTargetStateVector []byte)
 }
-

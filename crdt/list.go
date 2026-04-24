@@ -1,10 +1,8 @@
-package list
-
-import . "ygo"
+package crdt
 
 type YataList struct {
-	owner ID
-	items []YataItem
+	owner       ID
+	items       []YataItem
 	stateVector YataStateVector
 }
 
@@ -38,10 +36,10 @@ func (*YataList) DeleteItem(index int) {
 }
 
 func MakeYataList(uuid UUID) YataList {
-	owner := ID{UserID : uuid, OpCounter: 0}
-	return YataList {
-		owner : owner,
-		items : make([]YataItem, 2),
+	owner := ID{UserID: uuid, OpCounter: 0}
+	return YataList{
+		owner:       owner,
+		items:       make([]YataItem, 2),
 		stateVector: YataStateVector{owner},
 	}
 }

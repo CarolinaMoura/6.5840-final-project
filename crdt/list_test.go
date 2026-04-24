@@ -1,8 +1,9 @@
-package list_test
+package crdt_test
 
 import (
 	"testing"
-	. "ygo/list"
+
+	. "6.5840-final-project/crdt"
 )
 
 func TestNothing(t *testing.T) {

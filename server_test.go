@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -15,8 +14,6 @@ func TestHandleConnections_Echo(t *testing.T) {
 	defer testServer.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/ws"
-
-	fmt.Println(wsURL)
 
 	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {

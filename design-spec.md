@@ -17,12 +17,8 @@ The basic type is the YATA list, which supports the following operations,
 Using the YATAList, we can easily implement other shared types, like Text and Array.
 
 ## Signaling server
-We need, however, a central server to:
-* keep track of the connectivity in a room
-* relay SDP messages and ICE candidates
-
-These connections are done via WebSocket. 
+Peers talk to each other via WebRTC, but they need a signalign server to discover each other. The connections with the server happen via WebSocket.
 
 ### Fault-tolerance
-* For our MVP, SPOF: the room information lives in memory, managed by a lock. 
+* For our MVP, single-point-of-failure: the room information lives in memory, managed by a lock. 
 * In the future, we'll integrate with distributed in-memory like Redis.

@@ -1,0 +1,10 @@
+{
+  "name": "6.5840-final-project",
+  "private": true,
+  "scripts": {
+    "dev": "npm run build --prefix web && go run .",
+    "postinstall": "npm install --prefix web",
+    "build": "npm run build --prefix web",
+    "test": "go test ."
+  }
+}

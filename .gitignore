@@ -1,0 +1,10 @@
+# Frontend
+web/node_modules/
+web/dist/
+web/.vite/
+web/*.tsbuildinfo
+
+# Editor
+.vscode/
+.idea/
+.DS_Store

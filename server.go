@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/static"
 	"github.com/google/uuid"
 )
 
@@ -190,13 +191,14 @@ func (s *Server) wsGate(c fiber.Ctx) error {
 }
 
 func (s *Server) registerRoutes() {
-	s.app.Post("/rooms", s.handleCreateRoom)
+	s.app.Post("/api/rooms", s.handleCreateRoom)
 
-	s.app.Use("/ws/rooms/:room", s.wsGate)
-	s.app.Get("/ws/rooms/:room", websocket.New(s.handleJoinRoom))
+	s.app.Use("/api/ws/rooms/:room", s.wsGate)
+	s.app.Get("/api/ws/rooms/:room", websocket.New(s.handleJoinRoom))
 
+	s.app.Use("/", static.New("./web/dist"))
 	s.app.Get("/*", func(c fiber.Ctx) error {
-		return c.SendFile("index.html")
+		return c.SendFile("./web/dist/index.html")
 	})
 }
 

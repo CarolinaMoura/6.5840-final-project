@@ -16,5 +16,5 @@ API endpoints:
 
 To spin up a server on :8080
 ```
-go run server.go
+go run .
 ```

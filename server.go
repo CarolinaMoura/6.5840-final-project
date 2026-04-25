@@ -7,16 +7,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
-	"strings"
 	"sync"
 
-	"github.com/gorilla/websocket"
+	"github.com/gofiber/contrib/v3/websocket"
+	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 )
+
+type peer struct {
+	mu   sync.Mutex
+	id   string
+	conn *websocket.Conn
+}
+
+func (p *peer) send(payload []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.conn.WriteMessage(websocket.TextMessage, payload)
+}
+
+func (p *peer) sendJSON(v any) error {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return p.send(payload)
+}
 
 type Server struct {
 	mu    sync.RWMutex
-	rooms map[string][]*websocket.Conn
+	rooms map[string]map[string]*peer // room -> peerID -> peer
+	app   *fiber.App
+	addr  string
 }
 
 // Checks if a room is valid (6 alphanumeric chars).
@@ -24,147 +46,182 @@ func isRoomValid(room string) bool {
 	return len(room) == 6 && isAlphaNumericString(room)
 }
 
-// POST /rooms — creates a new room and returns its name.
-// @throws 400 if request body is malformed
-// @throws 405 if method is not allowed (not POST)
-// @throws 409 if room already exists
-func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
-	// Throws 405 if method is not POST
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
-	var body struct {
-		Room string `json:"room"`
-	}
-
-	// Throws 400 if request body is malformed
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !isRoomValid(body.Room) {
-		http.Error(w, `{"error":"room name required and must be 6 alphanumeric"}`, http.StatusBadRequest)
-		return
-	}
+// POST /rooms — creates a new room with a fresh 6-char alphanumeric code.
+func (s *Server) handleCreateRoom(c fiber.Ctx) error {
+	var room string
 
 	s.mu.Lock()
-	// Throws 409 if room already exists
-	if _, exists := s.rooms[body.Room]; exists {
-		s.mu.Unlock()
-		http.Error(w, `{"error":"room already exists"}`, http.StatusConflict)
-		return
+	for {
+		room = generateAlphanumericString(6)
+		if _, exists := s.rooms[room]; !exists {
+			s.rooms[room] = make(map[string]*peer)
+			break
+		}
 	}
-	s.rooms[body.Room] = []*websocket.Conn{}
 	s.mu.Unlock()
 
-	fmt.Printf("Room %q created\n", body.Room)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"room": body.Room})
+	fmt.Printf("Room %q created\n", room)
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"room": room})
 }
 
-// GET /ws/rooms/:room — upgrades to WebSocket and joins the room.
+// GET /ws/rooms/:room — joins the mesh signaling channel for the room.
+func (s *Server) handleJoinRoom(ws *websocket.Conn) {
+	room := ws.Params("room")
+	p := &peer{id: uuid.NewString(), conn: ws}
+
+	s.mu.Lock()
+	existingPeers := make([]string, 0, len(s.rooms[room]))
+	for id := range s.rooms[room] {
+		existingPeers = append(existingPeers, id)
+	}
+	s.rooms[room][p.id] = p
+	s.mu.Unlock()
+
+	welcome := fiber.Map{"type": "welcome", "id": p.id, "peers": existingPeers}
+	if err := p.sendJSON(welcome); err != nil {
+		s.removePeer(room, p.id)
+		ws.Close()
+		return
+	}
+
+	s.broadcastControl(room, p.id, fiber.Map{"type": "peer-joined", "id": p.id})
+
+	defer s.removePeer(room, p.id)
+	defer s.broadcastControl(room, p.id, fiber.Map{"type": "peer-left", "id": p.id})
+	defer ws.Close()
+
+	for {
+		_, payload, err := ws.ReadMessage()
+		if err != nil {
+			break
+		}
+		s.routeMessage(room, p.id, payload)
+	}
+}
+
+// Forwards a peer-originated message. Stamps "from"; if "to" is
+// set and matches a peer in the room, unicasts; otherwise broadcasts to all
+// other peers. Drops silently on malformed JSON or unknown target.
+func (s *Server) routeMessage(room, fromID string, payload []byte) {
+	var msg map[string]any
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return
+	}
+	msg["from"] = fromID
+	out, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+
+	to, _ := msg["to"].(string)
+	s.deliver(room, to, fromID, out)
+}
+
+// Sends a server-generated control message to all peers in
+// the room except `excludeID`.
+func (s *Server) broadcastControl(room, excludeID string, msg fiber.Map) {
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	s.deliver(room, "", excludeID, payload)
+}
+
+// Sends payload to peers in `room`. If targetID is non-empty and that
+// peer exists, unicasts; otherwise fans out to everyone except `excludeID`.
+func (s *Server) deliver(room, targetID, excludeID string, payload []byte) {
+	if targetID != "" {
+		s.mu.RLock()
+		target := s.rooms[room][targetID]
+		s.mu.RUnlock()
+		if target != nil {
+			target.send(payload)
+		}
+		return
+	}
+	for _, pr := range s.snapshotPeers(room, excludeID) {
+		pr.send(payload)
+	}
+}
+
+// Returns the peers in `room` excluding `excludeID`, copied out
+// from under the lock so callers can send without blocking room mutations.
+func (s *Server) snapshotPeers(room, excludeID string) []*peer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	peers := s.rooms[room]
+	out := make([]*peer, 0, len(peers))
+	for id, pr := range peers {
+		if id != excludeID {
+			out = append(out, pr)
+		}
+	}
+	return out
+}
+
+func (s *Server) removePeer(room, id string) {
+	s.mu.Lock()
+	delete(s.rooms[room], id)
+	s.mu.Unlock()
+}
+
+// Pre-upgrade gate for /ws/rooms/:room — validates room exists before upgrading.
 // @throws 400 if room is malformed
 // @throws 404 if room doesn't exist
-func (s *Server) handleJoinRoom(w http.ResponseWriter, r *http.Request, room string) {
+func (s *Server) wsGate(c fiber.Ctx) error {
+	room := c.Params("room")
+
+	if !isRoomValid(room) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "room is not a valid format"})
+	}
+
 	s.mu.RLock()
 	_, exists := s.rooms[room]
 	s.mu.RUnlock()
 
-	// Throws 400 if room is malformed
-	if !isRoomValid(room) {
-		http.Error(w, `{"error":"room is not valid"}`, http.StatusBadRequest)
-		return
-	}
-
-	// Throws 404 if room doesn't exist
 	if !exists {
-		http.Error(w, `{"error":"room not found"}`, http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
 	}
 
-	// Takes a normal HTTP connection and upgrades it to a WebSocket
-	// [TODO] The buffer sizes are default (i.e., set to 0);
-	// we should play with them if performance demands it
-	var upgrader = websocket.Upgrader{
-		ReadBufferSize:  0,
-		WriteBufferSize: 0,
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
+	if !websocket.IsWebSocketUpgrade(c) {
+		return fiber.ErrUpgradeRequired
 	}
-
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		http.Error(w, `{"error":"failed to upgrade connection"}`, http.StatusInternalServerError)
-		return
-	}
-
-	s.mu.Lock()
-	s.rooms[room] = append(s.rooms[room], ws)
-	s.mu.Unlock()
-
-	defer s.removeFromRoom(room, ws)
-	defer ws.Close()
-
-	for {
-		messageType, payload, err := ws.ReadMessage()
-
-		if err != nil { // Client disconnected?
-			s.removeFromRoom(room, ws)
-			break
-		}
-
-		s.broadcast(room, ws, messageType, payload)
-	}
+	return c.Next()
 }
 
-func (s *Server) removeFromRoom(room string, ws *websocket.Conn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	conns := s.rooms[room]
-	for i, c := range conns {
-		if c == ws {
-			s.rooms[room] = append(conns[:i], conns[i+1:]...)
-			break
-		}
-	}
+func (s *Server) registerRoutes() {
+	s.app.Post("/rooms", s.handleCreateRoom)
+
+	s.app.Use("/ws/rooms/:room", s.wsGate)
+	s.app.Get("/ws/rooms/:room", websocket.New(s.handleJoinRoom))
+
+	s.app.Get("/*", func(c fiber.Ctx) error {
+		return c.SendFile("index.html")
+	})
 }
 
-func (s *Server) broadcast(room string, sender *websocket.Conn, messageType int, payload []byte) {
-	// TODO
+// Blocks until the server stops
+func (s *Server) Start() error {
+	return s.app.Listen(s.addr)
 }
 
-func makeServer() *Server {
-	return &Server{
-		rooms: make(map[string][]*websocket.Conn),
-	}
+func (s *Server) Shutdown() error {
+	return s.app.Shutdown()
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case r.URL.Path == "/rooms":
-		s.handleCreateRoom(w, r)
-
-	case strings.HasPrefix(r.URL.Path, "/ws/rooms/"):
-		room := strings.TrimPrefix(r.URL.Path, "/ws/rooms/")
-		s.handleJoinRoom(w, r, room)
-
-	default:
-		http.ServeFile(w, r, "index.html")
+func makeServer(port int) *Server {
+	s := &Server{
+		rooms: make(map[string]map[string]*peer),
+		app:   fiber.New(),
+		addr:  fmt.Sprintf(":%d", port),
 	}
+	s.registerRoutes()
+	return s
 }
 
 func main() {
-	server := makeServer()
-
-	httpSrv := &http.Server{
-		Addr:    ":8080",
-		Handler: server,
-	}
-
-	fmt.Println("Server listening on http://localhost:8080")
-	err := httpSrv.ListenAndServe()
-	if err != nil {
+	server := makeServer(8080)
+	if err := server.Start(); err != nil {
 		log.Fatal("Server crashed:", err)
 	}
 }

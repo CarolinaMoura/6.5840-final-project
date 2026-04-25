@@ -1,37 +1,23 @@
+// Manual testing:
+//
+// [Should create a room]
+//     - in one terminal:
+//         > go run .
+//         > curl -X POST http://localhost:8080/rooms
+//  Expected: {"room":"<room>"}
+//
+//
+//  [Should upgrade connection to a websocket + should discover peers correctly]
+//      - in one terminal:
+//        > go run .
+//        > curl -X POST http://localhost:8080/rooms
+//      - (make sure you have websocat installed)
+//        > websocat ws://localhost:8080/ws/rooms/<room>
+//   Expected: `{"id":"<uuid1>","peers":<[]>,"type":"welcome"}`
+//      - in another terminal:
+//        > websocat ws://localhost:8080/ws/rooms/<room>
+//   Expected: `{"id":"<uuid2>","peers":<[uuid1]>,"type":"welcome"}`
+//      - in the first terminal:
+//   Expected: `{"id":"<uuid2>","type":"peer-joined"}`
+
 package main
-
-import (
-	"net/http/httptest"
-	"strings"
-	"testing"
-
-	"github.com/gorilla/websocket"
-)
-
-func TestHandleConnections_Echo(t *testing.T) {
-	server := makeServer()
-	testServer := httptest.NewServer(server)
-	defer testServer.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/ws"
-
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("could not open a ws connection on %s %v", wsURL, err)
-	}
-	defer ws.Close()
-
-	messageToSend := []byte("hello server")
-	if err := ws.WriteMessage(websocket.TextMessage, messageToSend); err != nil {
-		t.Fatalf("could not send message: %v", err)
-	}
-
-	_, messageReceived, err := ws.ReadMessage()
-	if err != nil {
-		t.Fatalf("could not read message: %v", err)
-	}
-
-	if string(messageReceived) != string(messageToSend) {
-		t.Errorf("expected %s, got %s", messageToSend, messageReceived)
-	}
-}

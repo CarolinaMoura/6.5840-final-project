@@ -8,19 +8,54 @@
 
 <body>
     <h1>WebSocket Test</h1>
-    <form onsubmit="send()">
+
+    <button onclick="createRoom()" id="create-room">Create Room</button>
+
+    <!-- <form onsubmit="send(); return false;">
         <input id="msg" type="text" placeholder="Type a message...">
         <button onclick="send()">Send</button>
-    </form>
-    <pre id="log"></pre>
+    </form> -->
+
+    <div id="log">
+        <h2>Network Events:</h2>
+    </div>
 
     <script>
-        const ws = new WebSocket("ws://" + location.host + "/ws");
-        const log = document.getElementById("log");
+        let ws;
 
-        ws.onopen = () => log.textContent += "Connected\n";
-        ws.onmessage = (e) => log.textContent += "Received: " + e.data + "\n";
-        ws.onclose = () => log.textContent += "Disconnected\n";
+        // Check if already is in a room
+        const room = window.location.pathname.split("/")[2];
+        if (room) {
+            joinRoom(room);
+        }
+        else {
+            const createRoomButton = document.getElementById("create-room");
+            createRoomButton.style.display = "block";
+        }
+
+        function appendLog(m) {
+            const log = document.getElementById("log");
+            const p = document.createElement("p");
+            p.innerText = "➡️ " + m;
+            log.appendChild(p);
+        }
+
+        async function createRoom() {
+            const { room } = await fetch("/rooms", { method: "POST" }).then(r => r.json());
+            await joinRoom(room);
+        }
+        connect();
+
+        async function joinRoom(room) {
+            ws = new WebSocket(`ws://${location.host}/ws/rooms/${room}`);
+
+            window.history.pushState({}, "", `/rooms/${room}`);
+
+            ws.onopen = () => appendLog("Connected to signaling server via WebSocket");
+            ws.onmessage = e => appendLog(e.data);
+            ws.onclose = () => appendLog("Disconnected from signaling server.");
+        }
+
 
         function send() {
             const input = document.getElementById("msg");
@@ -30,5 +65,17 @@
         }
     </script>
 </body>
+
+<style>
+    #log {
+        margin: 5%;
+        border: 1px solid black;
+        min-height: 50vh;
+    }
+
+    #create-room {
+        display: none;
+    }
+</style>
 
 </html>

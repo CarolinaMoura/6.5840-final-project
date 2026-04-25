@@ -1,3 +1,4 @@
+To start, run `npm install` from the root dir to install the dependencies for both the Go server and the React frontend.
 
 ## Server
 ### Running

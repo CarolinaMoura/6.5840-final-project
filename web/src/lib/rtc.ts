@@ -1,11 +1,12 @@
 // Define all kinds of messages that I can receive/send from/to the server
+// [TODO] how to keep these in accordance with the Go server?
 enum SignalType {
-  Welcome,
-  PeerJoined,
-  PeerLeft,
-  Offer,
-  Answer,
-  Ice,
+  Welcome = "welcome",
+  PeerJoined = "peer-joined",
+  PeerLeft = "peer-left",
+  Offer = "offer",
+  Answer = "answer",
+  Ice = "ice-candidate",
 }
 type Welcome = {
   type: SignalType.Welcome;
@@ -37,7 +38,24 @@ type Ice = {
 };
 type SignalMessage = Welcome | PeerJoined | PeerLeft | Offer | Answer | Ice;
 
-// Revisit the ICE servers if too many peers fail
+type OutgoingOffer = {
+  type: "offer";
+  to: string;
+  sdp: RTCSessionDescriptionInit;
+};
+type OutgoingAnswer = {
+  type: "answer";
+  to: string;
+  sdp: RTCSessionDescriptionInit;
+};
+type OutgoingIce = {
+  type: "ice-candidate";
+  to: string;
+  candidate: RTCIceCandidateInit;
+};
+type OutgoingSignal = OutgoingOffer | OutgoingAnswer | OutgoingIce;
+
+// [TODO] Revisit the ICE servers if too many peers fail
 const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 const CHANNEL_LABEL = "yata";
 
@@ -50,18 +68,15 @@ export class RTC {
   private myId: string | null = null;
   private connections = new Map<string, RTCPeerConnection>();
   private channels = new Map<string, RTCDataChannel>();
-  private sendRaw: (raw: string) => void;
   private handlers: Handlers;
+  private sendRaw: (raw: string) => void = () => {};
 
-  /**
-   * Creates a new peer-to-peer connection manager.
-   *
-   * @param sendRaw Function to send a raw message to the server.
-   * @param handlers Optional handlers for data and peer changes
-   */
-  constructor(sendRaw: (raw: string) => void, handlers: Handlers = {}) {
-    this.sendRaw = sendRaw;
+  constructor(handlers: Handlers = {}) {
     this.handlers = handlers;
+  }
+
+  public setSendMethod(sendRaw: (raw: string) => void) {
+    this.sendRaw = sendRaw;
   }
 
   public handleSignal(raw: string) {
@@ -73,6 +88,7 @@ export class RTC {
       return;
     }
 
+    console.log("Received signal", msg);
     switch (msg.type) {
       case SignalType.Welcome:
         this.myId = msg.id;
@@ -102,7 +118,9 @@ export class RTC {
   }
 
   public broadcast(data: string) {
+    console.log("broadcast", this.channels.size, data);
     this.channels.forEach((ch) => {
+      console.log("  ->", ch.readyState);
       if (ch.readyState === "open") ch.send(data);
     });
   }
@@ -117,28 +135,47 @@ export class RTC {
     return this.myId;
   }
 
-  private send(msg: object) {
+  private send(msg: OutgoingSignal) {
     this.sendRaw(JSON.stringify(msg));
+  }
+
+  private async sendOffer(to: string, pc: RTCPeerConnection) {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    this.send({ type: "offer", to, sdp: offer });
+  }
+
+  private async sendAnswer(to: string, pc: RTCPeerConnection) {
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    this.send({ type: "answer", to, sdp: answer });
+  }
+
+  private sendIce(to: string, candidate: RTCIceCandidateInit) {
+    this.send({ type: "ice-candidate", to, candidate });
   }
 
   private createPeerConnection(peerId: string): RTCPeerConnection {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     pc.onicecandidate = (e) => {
       if (e.candidate) {
-        this.send({
-          type: "ice-candidate",
-          to: peerId,
-          candidate: e.candidate.toJSON(),
-        });
+        this.sendIce(peerId, e.candidate.toJSON());
+        console.log("Sent ICE candidate for peer", peerId);
       }
     };
     pc.ondatachannel = (e) => this.attachChannel(peerId, e.channel);
     pc.onconnectionstatechange = () => {
+      console.log(
+        "Peer connection state changed for peer",
+        peerId,
+        pc.connectionState,
+      );
       if (pc.connectionState === "failed" || pc.connectionState === "closed") {
         this.dropPeer(peerId);
       }
     };
     this.connections.set(peerId, pc);
+    console.log("Created peer connection for peer", peerId);
     return pc;
   }
 
@@ -156,17 +193,13 @@ export class RTC {
     const pc = this.createPeerConnection(peerId);
     const ch = pc.createDataChannel(CHANNEL_LABEL);
     this.attachChannel(peerId, ch);
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    this.send({ type: "offer", to: peerId, sdp: offer });
+    await this.sendOffer(peerId, pc);
   }
 
   private async handleOffer(from: string, sdp: RTCSessionDescriptionInit) {
     const pc = this.createPeerConnection(from);
     await pc.setRemoteDescription(sdp);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    this.send({ type: "answer", to: from, sdp: answer });
+    await this.sendAnswer(from, pc);
   }
 
   private async handleAnswer(from: string, sdp: RTCSessionDescriptionInit) {

@@ -23,7 +23,7 @@ func (*YataList) EncodeStateVector() []byte {
 	panic("not implemented")
 }
 
-func (*YataList) EncodeStateAsUpdate(encodedTargetStateVector []byte) {
+func (*YataList) EncodeStateAsUpdate(encodedTargetStateVector []byte) []byte {
 	panic("not implemented")
 }
 
@@ -32,6 +32,14 @@ func (*YataList) InsertItem(index int, content any) {
 }
 
 func (*YataList) DeleteItem(index int) {
+	panic("not implemented")
+}
+
+func (*YataList) Length() {
+	panic("not implemented")
+}
+
+func (*YataList) Items() []any {
 	panic("not implemented")
 }
 

@@ -3,6 +3,8 @@ web/node_modules/
 web/dist/
 web/.vite/
 web/*.tsbuildinfo
+web/.env.local
+web/.env.*.local
 
 # Editor
 .vscode/

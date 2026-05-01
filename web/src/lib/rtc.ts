@@ -58,18 +58,28 @@ type OutgoingIce = {
 };
 type OutgoingSignal = OutgoingOffer | OutgoingAnswer | OutgoingIce;
 
-// [TODO] Revisit the ICE servers if too many peers fail
+const TURN_USERNAME = import.meta.env.VITE_TURN_USERNAME as string | undefined;
+const TURN_CREDENTIAL = import.meta.env.VITE_TURN_CREDENTIAL as
+  | string
+  | undefined;
+
+console.log(TURN_USERNAME, TURN_CREDENTIAL);
+
 const ICE_SERVERS: RTCIceServer[] = [
-  { urls: "stun:stun.l.google.com:19302" },
-  {
-    urls: [
-      "turn:openrelay.metered.ca:80",
-      "turn:openrelay.metered.ca:443",
-      "turn:openrelay.metered.ca:443?transport=tcp",
-    ],
-    username: "openrelayproject",
-    credential: "openrelayproject",
-  },
+  { urls: "stun:stun.cloudflare.com:3478" },
+  ...(TURN_USERNAME && TURN_CREDENTIAL
+    ? [
+        {
+          urls: [
+            "turn:turn.cloudflare.com:3478?transport=udp",
+            "turn:turn.cloudflare.com:3478?transport=tcp",
+            "turns:turn.cloudflare.com:5349?transport=tcp",
+          ],
+          username: TURN_USERNAME,
+          credential: TURN_CREDENTIAL,
+        },
+      ]
+    : []),
 ];
 const CHANNEL_LABEL = "yata";
 

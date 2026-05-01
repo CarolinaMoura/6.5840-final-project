@@ -142,6 +142,10 @@ export class RTC {
     if (ch?.readyState === "open") ch.send(data);
   }
 
+  /**
+   * Broadcasts a message to all connected peers
+   * @param data Data to broadcast
+   */
   public broadcast(data: string) {
     console.log("broadcast", this.channels.size, data);
     this.channels.forEach((ch) => {

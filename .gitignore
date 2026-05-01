@@ -1,7 +1,9 @@
+node_modules/**
+
 # Frontend
-web/node_modules/
-web/dist/
-web/.vite/
+web/node_modules/**
+web/dist/**
+web/.vite/**
 web/*.tsbuildinfo
 web/.env.local
 web/.env.*.local

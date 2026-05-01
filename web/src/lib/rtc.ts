@@ -1,4 +1,7 @@
 // Define all kinds of messages that I can receive/send from/to the server
+
+import { Deferred } from "./deferred";
+
 // [TODO] how to keep these in accordance with the Go server?
 enum SignalType {
   Welcome = "welcome",
@@ -81,6 +84,7 @@ export class RTC {
   private channels = new Map<string, RTCDataChannel>();
   private handlers: Handlers;
   private sendRaw: (raw: string) => void = () => {};
+  private pendingIce = new Map<string, Deferred<void>[]>();
 
   constructor(handlers: Handlers = {}) {
     this.handlers = handlers;
@@ -186,6 +190,7 @@ export class RTC {
       }
     };
     this.connections.set(peerId, pc);
+    this.pendingIce.set(peerId, []);
     console.log("Created peer connection for peer", peerId);
     return pc;
   }
@@ -210,21 +215,53 @@ export class RTC {
   private async handleOffer(from: string, sdp: RTCSessionDescriptionInit) {
     const pc = this.createPeerConnection(from);
     await pc.setRemoteDescription(sdp);
+    this.flushPendingIce(from);
     await this.sendAnswer(from, pc);
+  }
+
+  /**
+   * Resolves any pending ICE candidates for the given peer (in case
+   * candidates arrived before description).
+   * This is called when we receive an answer from a peer, which means
+   * we can now add their ICE candidates to our connection.
+   * @param peerId The peer id to flush pending ICE candidates for.
+   */
+  private flushPendingIce(peerId: string) {
+    const queuedIced = this.pendingIce.get(peerId) ?? [];
+    queuedIced.forEach((candidateDeferred) => {
+      candidateDeferred.resolve();
+    });
+    this.pendingIce.delete(peerId);
   }
 
   private async handleAnswer(from: string, sdp: RTCSessionDescriptionInit) {
     const pc = this.connections.get(from);
     if (!pc) return;
     await pc.setRemoteDescription(sdp);
+
+    this.flushPendingIce(from);
   }
 
   private async handleIce(from: string, candidate: RTCIceCandidateInit) {
     const pc = this.connections.get(from);
-    if (!pc) return;
+    const waiting = this.pendingIce.get(from);
+
+    if (!pc) {
+      console.log("No peer connection for", from);
+      return;
+    }
+
+    if (waiting && !pc.remoteDescription) {
+      const deferred = new Deferred<void>();
+      waiting.push(deferred);
+      await deferred.promise;
+    }
+
     try {
       await pc.addIceCandidate(candidate);
-    } catch {}
+    } catch (e) {
+      console.error("Failed to add ICE candidate for peer", from, e);
+    }
   }
 
   private dropPeer(peerId: string) {

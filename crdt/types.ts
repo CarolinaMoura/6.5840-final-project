@@ -1,11 +1,11 @@
 export type UUID = number;
 
-export interface ID {
+export type ID = {
   userID: UUID;
   opCounter: number;
 }
 
-export interface YataItem {
+export type YataItem = {
   id: ID;
   left: ID;
   right: ID;
@@ -15,7 +15,7 @@ export interface YataItem {
   content: unknown;
 }
 
-export type YataStateVector = ID[];
+export type YataStateVector = Map<UUID, number>;
 
 export interface YataType {
   getStateVector(): YataStateVector;

@@ -24,10 +24,16 @@ npm run dev
 | /api/rooms          | POST   | creates a new room and returns its name.  |
 | /api/ws/rooms/:room | GET    | upgrades to WebSocket and joins the room. |
 
+## RPC definitions
+
+### raftpb
+
+If you change `raft.proto`, run `make proto` to generate the new gRPC stubs. If that fails, you may need to install protoc and the protoc-gen-go plugin.
+
 ## Testing
 
-To run all tests in the main package, run the following command from the root dir:
+To run all tests, run the following command from the root dir:
 
 ```
-npm run test
+make test
 ```

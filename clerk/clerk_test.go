@@ -13,7 +13,7 @@ func TestMain(m *testing.M) {
 	testutil.MustTestMainWithLeakDetection(m)
 }
 
-func newClerk(t *testing.T, clusterSize int) (*Clerk, func()) {
+func MakeTestClerk(t *testing.T, clusterSize int) (*Clerk, func()) {
 	t.Helper()
 	integration.BeforeTest(t)
 	clus := integration.NewCluster(t, &integration.ClusterConfig{Size: clusterSize})
@@ -23,7 +23,7 @@ func newClerk(t *testing.T, clusterSize int) (*Clerk, func()) {
 
 // Get on a missing key returns ErrNoKey with zero value/version.
 func TestGet_MissingKey(t *testing.T) {
-	ck, cleanup := newClerk(t, 3)
+	ck, cleanup := MakeTestClerk(t, 3)
 	defer cleanup()
 
 	v, ver, err := ck.Get("nope")
@@ -37,7 +37,7 @@ func TestGet_MissingKey(t *testing.T) {
 
 // First Put on a fresh key (version 0) creates it at version 1.
 func TestPut_CreateThenGet(t *testing.T) {
-	ck, cleanup := newClerk(t, 3)
+	ck, cleanup := MakeTestClerk(t, 3)
 	defer cleanup()
 
 	if err := ck.Put("k", "v1", 0); err != rpc.OK {
@@ -54,7 +54,7 @@ func TestPut_CreateThenGet(t *testing.T) {
 
 // Put with the matching version succeeds and bumps version by 1.
 func TestPut_VersionMatchUpdates(t *testing.T) {
-	ck, cleanup := newClerk(t, 3)
+	ck, cleanup := MakeTestClerk(t, 3)
 	defer cleanup()
 
 	if err := ck.Put("k", "v1", 0); err != rpc.OK {
@@ -71,7 +71,7 @@ func TestPut_VersionMatchUpdates(t *testing.T) {
 
 // Stale version on an existing key returns ErrVersion and leaves the value alone.
 func TestPut_VersionMismatchOnExisting(t *testing.T) {
-	ck, cleanup := newClerk(t, 3)
+	ck, cleanup := MakeTestClerk(t, 3)
 	defer cleanup()
 
 	if err := ck.Put("k", "v1", 0); err != rpc.OK {
@@ -89,7 +89,7 @@ func TestPut_VersionMismatchOnExisting(t *testing.T) {
 // Non-zero version on a missing key returns ErrNoKey (distinguishes
 // "create" from "blind update" per MIT 6.5840 semantics).
 func TestPut_NonZeroVersionOnMissingKey(t *testing.T) {
-	ck, cleanup := newClerk(t, 3)
+	ck, cleanup := MakeTestClerk(t, 3)
 	defer cleanup()
 
 	if err := ck.Put("ghost", "v", 1); err != rpc.ErrNoKey {
@@ -102,7 +102,7 @@ func TestPut_NonZeroVersionOnMissingKey(t *testing.T) {
 
 // Repeated successful Puts advance version by exactly 1 each.
 func TestPut_VersionMonotonic(t *testing.T) {
-	ck, cleanup := newClerk(t, 3)
+	ck, cleanup := MakeTestClerk(t, 3)
 	defer cleanup()
 
 	if err := ck.Put("k", "0", 0); err != rpc.OK {

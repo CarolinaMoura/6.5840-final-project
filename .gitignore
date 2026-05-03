@@ -12,3 +12,7 @@ web/.env.*.local
 .vscode/
 .idea/
 .DS_Store
+
+# Docker
+.gocache
+.gomodcache

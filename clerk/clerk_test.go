@@ -5,20 +5,11 @@ import (
 
 	rpc "6.5840-final-project/rsm/rpc"
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
-	integration "go.etcd.io/etcd/tests/v3/framework/integration"
 )
 
 // Required by etcd's integration framework — installs goroutine-leak detection.
 func TestMain(m *testing.M) {
 	testutil.MustTestMainWithLeakDetection(m)
-}
-
-func MakeTestClerk(t *testing.T, clusterSize int) (*Clerk, func()) {
-	t.Helper()
-	integration.BeforeTest(t)
-	clus := integration.NewCluster(t, &integration.ClusterConfig{Size: clusterSize})
-	ck := &Clerk{clnt: clus.RandClient()}
-	return ck, func() { clus.Terminate(t) }
 }
 
 // Get on a missing key returns ErrNoKey with zero value/version.

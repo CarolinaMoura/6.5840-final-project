@@ -7,8 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"sync"
 
+	"6.5840-final-project/clerk"
+	"6.5840-final-project/rsm/rpc"
 	"github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/static"
@@ -40,6 +44,7 @@ type Server struct {
 	rooms map[string]map[string]*peer // room -> peerID -> peer
 	app   *fiber.App
 	addr  string
+	ck    *clerk.Clerk
 }
 
 // Checks if a room is valid (6 alphanumeric chars).
@@ -54,8 +59,9 @@ func (s *Server) handleCreateRoom(c fiber.Ctx) error {
 	s.mu.Lock()
 	for {
 		room = generateAlphanumericString(6)
-		if _, exists := s.rooms[room]; !exists {
-			s.rooms[room] = make(map[string]*peer)
+		err := s.ck.Put("room-"+room, "", 0)
+
+		if err == rpc.OK {
 			break
 		}
 	}
@@ -211,18 +217,32 @@ func (s *Server) Shutdown() error {
 	return s.app.Shutdown()
 }
 
-func makeServer(port int) *Server {
+func makeServer(port int, etcdServers []string) *Server {
+	ck, err := clerk.MakeClerk(etcdServers)
+
+	if err != nil {
+		log.Fatal("Failed to create clerk:", err)
+	}
+
 	s := &Server{
 		rooms: make(map[string]map[string]*peer),
 		app:   fiber.New(),
-		addr:  fmt.Sprintf(":%d", port),
+		addr:  fmt.Sprintf("0.0.0.0:%d", port),
+		ck:    ck,
 	}
 	s.registerRoutes()
 	return s
 }
 
 func main() {
-	server := makeServer(8080)
+	if len(os.Args) < 3 {
+		log.Fatal("Usage: go run server.go <port> <etcd-server1> <etcd-server2> ...")
+	}
+	port, err := strconv.Atoi(os.Args[1])
+	if err != nil {
+		log.Fatal("Invalid port:", err)
+	}
+	server := makeServer(port, os.Args[2:])
 	if err := server.Start(); err != nil {
 		log.Fatal("Server crashed:", err)
 	}

@@ -1,6 +1,7 @@
 package clerk
 
 import (
+	"sort"
 	"testing"
 
 	rpc "6.5840-final-project/rsm/rpc"
@@ -89,6 +90,63 @@ func TestPut_NonZeroVersionOnMissingKey(t *testing.T) {
 	if _, _, err := ck.Get("ghost"); err != rpc.ErrNoKey {
 		t.Fatalf("ghost should not exist, got err = %q", err)
 	}
+}
+
+// Should return the correct list of registered signaling servers
+func TestSignalings_LifecycleAcrossRegistrations(t *testing.T) {
+	ck, cleanup := MakeTestClerk(t, 3)
+	defer cleanup()
+
+	addrs, err := ck.Signalings()
+	if err != rpc.OK {
+		t.Fatalf("initial list: %q", err)
+	}
+	if len(addrs) != 0 {
+		t.Fatalf("expected no signalings, got %v", addrs)
+	}
+
+	stop1, regErr := ck.RegisterWithLease("a", "host-a:8080", 10)
+	if regErr != nil {
+		t.Fatalf("register a: %v", regErr)
+	}
+	defer stop1()
+
+	stop2, regErr := ck.RegisterWithLease("b", "host-b:8080", 10)
+	if regErr != nil {
+		t.Fatalf("register b: %v", regErr)
+	}
+
+	addrs, err = ck.Signalings()
+	if err != rpc.OK {
+		t.Fatalf("list after registers: %q", err)
+	}
+	sort.Strings(addrs)
+	want := []string{"host-a:8080", "host-b:8080"}
+	if !equalSlices(addrs, want) {
+		t.Fatalf("got %v, want %v", addrs, want)
+	}
+
+	stop2()
+
+	addrs, err = ck.Signalings()
+	if err != rpc.OK {
+		t.Fatalf("list after revoke: %q", err)
+	}
+	if len(addrs) != 1 || addrs[0] != "host-a:8080" {
+		t.Fatalf("got %v, want [host-a:8080]", addrs)
+	}
+}
+
+func equalSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Repeated successful Puts advance version by exactly 1 each.

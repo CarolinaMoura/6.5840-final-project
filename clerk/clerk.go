@@ -32,6 +32,24 @@ func (ck *Clerk) Close() {
 	ck.clnt.Close()
 }
 
+// Returns the advertise addresses of every registered signaling server,
+// by reading all keys under the "signalings/" prefix.
+func (ck *Clerk) Signalings() ([]string, rpc.Err) {
+	ctx, cancel := context.WithTimeout(context.Background(), clerkTimeout)
+	defer cancel()
+
+	resp, err := ck.clnt.Get(ctx, "server/", clientv3.WithPrefix())
+	if err != nil {
+		fmt.Println("Error listing signalings:", err)
+		return nil, rpc.ErrEtcd
+	}
+	addrs := make([]string, 0, len(resp.Kvs))
+	for _, kv := range resp.Kvs {
+		addrs = append(addrs, string(kv.Value))
+	}
+	return addrs, rpc.OK
+}
+
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	ctx, cancel := context.WithTimeout(context.Background(), clerkTimeout)
 	defer cancel()
@@ -46,6 +64,40 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	}
 	kv := resp.Kvs[0]
 	return string(kv.Value), rpc.Tversion(kv.Version), rpc.OK
+}
+
+// Registers (key, value) under a self-renewing lease. Returns a stop
+// function that revokes the lease (and so deletes the key) when called.
+// The lease also expires on its own if the process dies without calling stop.
+func (ck *Clerk) RegisterWithLease(addr, value string, ttlSeconds int64) (func(), error) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	lease, err := ck.clnt.Grant(ctx, ttlSeconds)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if _, err := ck.clnt.Put(ctx, "server/"+addr, value, clientv3.WithLease(lease.ID)); err != nil {
+		cancel()
+		return nil, err
+	}
+	ch, err := ck.clnt.KeepAlive(ctx, lease.ID)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	// Drain renewal acks so the channel buffer doesn't fill and stall keep-alive.
+	go func() {
+		for range ch {
+		}
+	}()
+
+	return func() {
+		cancel()
+		revokeCtx, revokeCancel := context.WithTimeout(context.Background(), clerkTimeout)
+		defer revokeCancel()
+		ck.clnt.Revoke(revokeCtx, lease.ID)
+	}, nil
 }
 
 func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {

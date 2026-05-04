@@ -28,6 +28,7 @@ import (
 
 	"6.5840-final-project/clerk"
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"go.etcd.io/etcd/tests/v3/framework/integration"
 )
@@ -35,12 +36,16 @@ import (
 func makeTestServer(t *testing.T, rsmClusterSize int) (*Server, func()) {
 	t.Helper()
 	ck, cleanup := clerk.MakeTestClerk(t, rsmClusterSize, integration.WithoutGoLeakDetection())
+	id := uuid.NewString()
 	s := &Server{
-		rooms: make(map[string]map[string]*peer),
-		app:   fiber.New(),
-		ck:    ck,
+		rooms:         make(map[string]map[string]*peer),
+		app:           fiber.New(),
+		ck:            ck,
+		listenAddr:    id,
+		advertiseAddr: id,
 	}
 	s.registerRoutes()
+	ck.RegisterWithLease(s.advertiseAddr, s.advertiseAddr, 10)
 	return s, cleanup
 }
 

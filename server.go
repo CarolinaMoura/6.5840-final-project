@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 
@@ -40,11 +42,12 @@ func (p *peer) sendJSON(v any) error {
 }
 
 type Server struct {
-	mu    sync.RWMutex
-	rooms map[string]map[string]*peer // room -> peerID -> peer
-	app   *fiber.App
-	addr  string
-	ck    *clerk.Clerk
+	mu            sync.RWMutex
+	rooms         map[string]map[string]*peer // room -> peerID -> peer
+	app           *fiber.App
+	listenAddr    string // where to bind (e.g. "0.0.0.0:8080")
+	advertiseAddr string // how peers/clients reach us (e.g. "localhost:8082")
+	ck            *clerk.Clerk
 }
 
 // Checks if a room is valid (6 alphanumeric chars).
@@ -54,21 +57,88 @@ func isRoomValid(room string) bool {
 
 // POST /rooms — creates a new room with a fresh 6-char alphanumeric code.
 func (s *Server) handleCreateRoom(c fiber.Ctx) error {
+	allServers, err := s.ck.Signalings()
+
+	if err != rpc.OK {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to get other servers"})
+	}
+	if len(allServers) == 0 {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "No signaling servers available"})
+	}
+
+	assignedServer := allServers[rand.Intn(len(allServers))]
+
 	var room string
 
-	s.mu.Lock()
 	for {
 		room = generateAlphanumericString(6)
-		err := s.ck.Put("room-"+room, "", 0)
+		err := s.ck.Put("room/"+room, assignedServer, 0)
 
 		if err == rpc.OK {
 			break
 		}
 	}
-	s.mu.Unlock()
 
 	fmt.Printf("Room %q created\n", room)
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"room": room})
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"room": room, "server": assignedServer})
+}
+
+// GET /rooms/:room — returns the signaling server assigned to this room.
+// If the assigned server died (the lease expired), reassigns the room to a
+// live signaling and returns that.
+// @throws 404 if room doesn't exist
+// @throws 503 if no signalings are alive to reassign to
+func (s *Server) handleLookupRoom(c fiber.Ctx) error {
+	room := c.Params("room")
+
+	server, err := s.assignedSignaling(room)
+	switch err {
+	case rpc.OK:
+		return c.JSON(fiber.Map{"server": server})
+	case rpc.ErrNoKey:
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+	default:
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "no signaling available"})
+	}
+}
+
+// Returns the signaling currently responsible for `room`. If the recorded
+// signaling is no longer in the live set (its lease has expired), picks a
+// live signaling at random and room/<room> to point at it.
+// Loops on ErrVersion in case another lookup raced us to reassign.
+func (s *Server) assignedSignaling(room string) (string, rpc.Err) {
+	for {
+		// Get current assigned server
+		server, version, getErr := s.ck.Get("room/" + room)
+		if getErr != rpc.OK {
+			return "", getErr
+		}
+
+		// All current alive
+		live, listErr := s.ck.Signalings()
+		if listErr != rpc.OK {
+			return "", listErr
+		}
+		if slices.Contains(live, server) { // if the assigned server is in the live list, return it
+			return server, rpc.OK
+		}
+		if len(live) == 0 { // no live servers to reassign to
+			return "", rpc.ErrEtcd
+		}
+
+		// The server is dead, pick a new random server
+		newServer := live[rand.Intn(len(live))]
+		putErr := s.ck.Put("room/"+room, newServer, version)
+
+		if putErr == rpc.OK {
+			fmt.Printf("Room %q reassigned: %q (dead) -> %q\n", room, server, newServer)
+			return newServer, rpc.OK
+		}
+		if putErr == rpc.ErrVersion { // someone raced us; prob will get out in the next iteration
+			continue
+		}
+		return "", putErr
+	}
 }
 
 // GET /ws/rooms/:room — joins the mesh signaling channel for the room.
@@ -77,6 +147,11 @@ func (s *Server) handleJoinRoom(ws *websocket.Conn) {
 	p := &peer{id: uuid.NewString(), conn: ws}
 
 	s.mu.Lock()
+	// Lazy-init: rooms are durably tracked in etcd, but the in-memory
+	// peer set for a room only exists once someone joins this signaling.
+	if s.rooms[room] == nil {
+		s.rooms[room] = make(map[string]*peer)
+	}
 	existingPeers := make([]string, 0, len(s.rooms[room]))
 	for id := range s.rooms[room] {
 		existingPeers = append(existingPeers, id)
@@ -169,6 +244,9 @@ func (s *Server) snapshotPeers(room, excludeID string) []*peer {
 func (s *Server) removePeer(room, id string) {
 	s.mu.Lock()
 	delete(s.rooms[room], id)
+	if len(s.rooms[room]) == 0 {
+		delete(s.rooms, room)
+	}
 	s.mu.Unlock()
 }
 
@@ -178,16 +256,20 @@ func (s *Server) removePeer(room, id string) {
 func (s *Server) wsGate(c fiber.Ctx) error {
 	room := c.Params("room")
 
+	// Is room malformed?
 	if !isRoomValid(room) {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "room is not a valid format"})
 	}
 
-	s.mu.RLock()
-	_, exists := s.rooms[room]
-	s.mu.RUnlock()
-
-	if !exists {
+	// Does room exist?
+	server, _, err := s.ck.Get("room/" + room)
+	if err != rpc.OK {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "room not found"})
+	}
+
+	// Am I the assigned server?
+	if server != s.advertiseAddr {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "wrong server for this room"})
 	}
 
 	if !websocket.IsWebSocketUpgrade(c) {
@@ -198,6 +280,7 @@ func (s *Server) wsGate(c fiber.Ctx) error {
 
 func (s *Server) registerRoutes() {
 	s.app.Post("/api/rooms", s.handleCreateRoom)
+	s.app.Get("/api/rooms/:room", s.handleLookupRoom)
 
 	s.app.Use("/api/ws/rooms/:room", s.wsGate)
 	s.app.Get("/api/ws/rooms/:room", websocket.New(s.handleJoinRoom))
@@ -210,7 +293,7 @@ func (s *Server) registerRoutes() {
 
 // Blocks until the server stops
 func (s *Server) Start() error {
-	return s.app.Listen(s.addr)
+	return s.app.Listen(s.listenAddr)
 }
 
 func (s *Server) Shutdown() error {
@@ -224,13 +307,21 @@ func makeServer(port int, etcdServers []string) *Server {
 		log.Fatal("Failed to create clerk:", err)
 	}
 
-	s := &Server{
-		rooms: make(map[string]map[string]*peer),
-		app:   fiber.New(),
-		addr:  fmt.Sprintf("0.0.0.0:%d", port),
-		ck:    ck,
+	advertise := os.Getenv("ADVERTISE_ADDR")
+	if advertise == "" {
+		log.Fatal("ADVERTISE_ADDR is required")
 	}
+
+	s := &Server{
+		rooms:         make(map[string]map[string]*peer),
+		app:           fiber.New(),
+		listenAddr:    fmt.Sprintf("0.0.0.0:%d", port),
+		advertiseAddr: advertise,
+		ck:            ck,
+	}
+
 	s.registerRoutes()
+	ck.RegisterWithLease(s.advertiseAddr, s.advertiseAddr, 10)
 	return s
 }
 

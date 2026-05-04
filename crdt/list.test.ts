@@ -42,7 +42,7 @@ describe("YataList", () => {
     expect((list.getStateVector().get(7) ?? 0)).toBeGreaterThanOrEqual(afterInserts);
   });
 
-  it("merge basic", () => {
+  it("merge basic : assumes owner id tie breaks", () => {
     const list0 = new YataList(0);
     list0.insertItem(0, "Y");
     list0.insertItem(1, "A");
@@ -88,5 +88,24 @@ describe("YataList", () => {
     expect(a.length()).toBe(2);
     expect(b.length()).toBe(2);
     expect(getListAsString(a)).toBe(getListAsString(b));
+  });
+ 
+  it("merge handles cross-user origin dependencies", () => {
+    const a = new YataList(0);
+    const b = new YataList(1);
+
+    a.insertItem(0, "X");
+
+    b.applyUpdate(a.encodeStateAsUpdate());
+    b.insertItem(1, "Y");
+
+    a.applyUpdate(b.encodeStateAsUpdate(a.encodeStateVector()));
+    a.insertItem(2, "Z");
+
+    expect(getListAsString(a)).toBe("XYZ");
+
+    const c = new YataList(2);
+    c.applyUpdate(a.encodeStateAsUpdate());
+    expect(getListAsString(c)).toBe("XYZ");
   });
 });

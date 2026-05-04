@@ -1,8 +1,18 @@
 export type UUID = number;
 
-export type ID = {
-  userID: UUID;
-  opCounter: number;
+export class ID {
+  constructor(
+    public readonly userID: UUID,
+    public readonly opCounter: number,
+  ) {}
+
+  static key(id: ID): string {
+    return `${id.userID}:${id.opCounter}`;
+  }
+
+  static equals(a: ID, b: ID): boolean {
+    return a.userID === b.userID && a.opCounter === b.opCounter;
+  }
 }
 
 export type YataItem = {

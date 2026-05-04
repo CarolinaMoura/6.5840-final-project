@@ -9,10 +9,10 @@ test-raft:
 
 test:
 	go test . -v
+	npx vitest run
 
 init:
 	npm install --prefix web 
-	
 
 cluster:
 	npm run build --prefix web 

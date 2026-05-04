@@ -10,6 +10,10 @@ test-raft:
 test:
 	go test . -v
 
+init:
+	npm install --prefix web 
+	
+
 cluster:
 	npm run build --prefix web 
 	docker compose up --build

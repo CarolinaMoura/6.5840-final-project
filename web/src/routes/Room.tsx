@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { connectSignaling } from "../lib/signaling";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { startSignaling } from "../lib/signaling";
 import { RTC } from "../lib/rtc";
 
 export default function Room() {
   const { room } = useParams<{ room: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const initialServer = (location.state as { server?: string } | null)?.server;
   const [events, setEvents] = useState<string[]>([]);
   const rtcRef = useRef<RTC | null>(null);
   if (rtcRef.current === null) {
@@ -23,10 +25,11 @@ export default function Room() {
 
   useEffect(() => {
     if (!room) return;
-    const ws = connectSignaling(room, rtc);
-
-    return () => ws.close();
-  }, [room, navigate]);
+    return startSignaling(room, rtc, {
+      initialServer,
+      onLookupFailed: () => navigate("/"),
+    });
+  }, [room, navigate, initialServer, rtc]);
 
   return (
     <main>

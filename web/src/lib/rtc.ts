@@ -86,6 +86,7 @@ const CHANNEL_LABEL = "yata";
 type Handlers = {
   onData?: (peerId: string, data: string) => void; // Receive updates to the document
   onPeersChanged?: (peers: string[]) => void; // To maybe update the UI
+  onWelcome?: (myId: string) => void; // Fired when the signaling server assigns us an id
 };
 
 export class RTC {
@@ -117,6 +118,7 @@ export class RTC {
     switch (msg.type) {
       case SignalType.Welcome:
         this.myId = msg.id;
+        this.handlers.onWelcome?.(msg.id);
         msg.peers.forEach((id) => this.initiate(id));
         break;
       case SignalType.PeerJoined:

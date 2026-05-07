@@ -8,17 +8,25 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net"
 	"os"
 	"slices"
 	"strconv"
 	"sync"
 
 	"6.5840-final-project/clerk"
+	"6.5840-final-project/kv"
+	"6.5840-final-project/raft"
+	"6.5840-final-project/raft/persister"
+	pb "6.5840-final-project/raft/raftpb"
+	"6.5840-final-project/rsm"
 	"6.5840-final-project/rsm/rpc"
 	"github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/static"
 	"github.com/google/uuid"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type peer struct {
@@ -48,6 +56,8 @@ type Server struct {
 	listenAddr    string // where to bind (e.g. "0.0.0.0:8080")
 	advertiseAddr string // how peers/clients reach us (e.g. "localhost:8082")
 	ck            *clerk.Clerk
+	kv            *kv.KVServer // local replicated kv (will replace etcd)
+	raftShutdown  func()       // tears down raft gRPC + persister
 }
 
 // Checks if a room is valid (6 alphanumeric chars).
@@ -297,19 +307,112 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Shutdown() error {
+	if s.raftShutdown != nil {
+		s.raftShutdown()
+	}
 	return s.app.Shutdown()
 }
 
-func makeServer(port int, etcdServers []string) *Server {
-	ck, err := clerk.MakeClerk(etcdServers)
-
-	if err != nil {
-		log.Fatal("Failed to create clerk:", err)
+// peers is the cluster's full address list (e.g. ["host1:7001","host2:7001",
+// "host3:7001"]); peers[me] is THIS node — we listen there and also dial
+// ourselves so Raft can RPC itself like any other peer.
+//
+// Returns the RSM and a shutdown func that stops gRPC and closes resources.
+func bootRaft(me int, peers []string, dataDir string, sm rsm.StateMachine) (*rsm.RSM, func(), error) {
+	if me < 0 || me >= len(peers) {
+		return nil, nil, fmt.Errorf("me=%d out of range for %d peers", me, len(peers))
 	}
 
+	// Listen on this node's address for incoming Raft RPCs
+	lis, err := net.Listen("tcp", peers[me])
+	if err != nil {
+		return nil, nil, fmt.Errorf("listen %s: %w", peers[me], err)
+	}
+
+	conns := make([]*grpc.ClientConn, len(peers))
+	clients := make([]pb.RaftClient, len(peers))
+	closeConns := func() {
+		for _, c := range conns {
+			if c != nil {
+				_ = c.Close()
+			}
+		}
+	}
+	for i, addr := range peers {
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			_ = lis.Close()
+			closeConns()
+			return nil, nil, fmt.Errorf("dial peer %d (%s): %w", i, addr, err)
+		}
+		conns[i] = conn
+		clients[i] = pb.NewRaftClient(conn)
+	}
+
+	// On-disk persister for raft log + snapshot.
+	pst, err := persister.New(fmt.Sprintf("%s/raft-%d.db", dataDir, me))
+	if err != nil {
+		_ = lis.Close()
+		closeConns()
+		return nil, nil, fmt.Errorf("persister: %w", err)
+	}
+
+	rsmInst := rsm.MakeRSM(clients, me, pst, -1, sm)
+	rfServer, ok := rsmInst.Raft().(*raft.Raft)
+	if !ok {
+		_ = lis.Close()
+		closeConns()
+		_ = pst.Close()
+		return nil, nil, fmt.Errorf("rsm.Raft() did not return *raft.Raft")
+	}
+	grpcSrv := grpc.NewServer()
+	pb.RegisterRaftServer(grpcSrv, rfServer)
+
+	go func() {
+		if err := grpcSrv.Serve(lis); err != nil {
+			log.Printf("raft grpc server stopped: %v", err)
+		}
+	}()
+
+	shutdown := func() {
+		grpcSrv.GracefulStop()
+		closeConns()
+		_ = pst.Close()
+	}
+	return rsmInst, shutdown, nil
+}
+
+func makeServer(port int, raftPeers []string) *Server {
 	advertise := os.Getenv("ADVERTISE_ADDR")
 	if advertise == "" {
 		log.Fatal("ADVERTISE_ADDR is required")
+	}
+
+	meStr := os.Getenv("ME")
+	if meStr == "" {
+		log.Fatal("ME is required (this node's index into the raft peer list)")
+	}
+	me, err := strconv.Atoi(meStr)
+	if err != nil {
+		log.Fatalf("invalid ME=%q: %v", meStr, err)
+	}
+	dataDir := os.Getenv("RAFT_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "."
+	}
+
+	// Start KV server
+	kvSM := kv.NewKVServer(me)
+	rsmInst, raftShutdown, err := bootRaft(me, raftPeers, dataDir, kvSM)
+	if err != nil {
+		log.Fatal("bootRaft:", err)
+	}
+	kvSM.Bind(rsmInst)
+
+	// Create clerk
+	ck, err := clerk.MakeClerk(raftPeers)
+	if err != nil {
+		log.Fatal("MakeClerk:", err)
 	}
 
 	s := &Server{
@@ -317,17 +420,18 @@ func makeServer(port int, etcdServers []string) *Server {
 		app:           fiber.New(),
 		listenAddr:    fmt.Sprintf("0.0.0.0:%d", port),
 		advertiseAddr: advertise,
+		kv:            kvSM,
+		raftShutdown:  raftShutdown,
 		ck:            ck,
 	}
 
 	s.registerRoutes()
-	ck.RegisterWithLease(s.advertiseAddr, s.advertiseAddr, 10)
 	return s
 }
 
 func main() {
 	if len(os.Args) < 3 {
-		log.Fatal("Usage: go run server.go <port> <etcd-server1> <etcd-server2> ...")
+		log.Fatal("Usage: go run server.go <port> <raft-server1> <raft-server2> ...")
 	}
 	port, err := strconv.Atoi(os.Args[1])
 	if err != nil {

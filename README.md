@@ -1,3 +1,6 @@
+TODO: add roundtrip check for client (bc server might have not died for it)
+TODO: fix leases
+
 # Cluster
 
 ## Prerequisites

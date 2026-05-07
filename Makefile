@@ -13,6 +13,8 @@ test:
 
 init:
 	npm install --prefix web 
+	mkdir -p data/node1 data/node2 data/node3
+	# automate using constants for N and M
 
 cluster:
 	npm run build --prefix web 

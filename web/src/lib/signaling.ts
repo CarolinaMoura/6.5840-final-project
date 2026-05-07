@@ -6,6 +6,8 @@ const FALLBACK_HOSTS = ["localhost:8081", "localhost:8082", "localhost:8083"];
 interface StartOpts {
   initialServer?: string;
   onLookupFailed?: () => void;
+  // Connection-lifecycle messages for the UI: "Connected to ...", etc.
+  onStatus?: (msg: string) => void;
 }
 
 async function lookupRoom(room: string): Promise<string> {
@@ -54,10 +56,12 @@ export function startSignaling(
   let cancelled = false;
   let backoff = 500;
   let attempt = 0;
+  let lastServer: string | null = null;
 
   async function connect() {
     let server = attempt === 0 ? opts.initialServer : undefined;
     if (!server) {
+      opts.onStatus?.("Looking up signaling server…");
       try {
         server = await lookupRoom(room);
       } catch (e) {
@@ -66,21 +70,30 @@ export function startSignaling(
           return;
         }
         // "all_unreachable" or unexpected — back off and retry.
+        opts.onStatus?.("No signaling reachable, retrying…");
         scheduleReconnect();
         return;
       }
     }
     if (cancelled) return;
 
-    ws = openSocket(room, rtc, server);
+    const target = server;
+    ws = openSocket(room, rtc, target);
     ws.addEventListener("open", () => {
-      console.log("WebSocket opened with ", server, ", resetting backoff");
+      console.log("WebSocket opened with ", target, ", resetting backoff");
       backoff = 500;
+      if (lastServer !== null && lastServer !== target) {
+        opts.onStatus?.(`Reconnected to ${target} (was ${lastServer})`);
+      } else {
+        opts.onStatus?.(`Connected to ${target}`);
+      }
+      lastServer = target;
     });
     ws.addEventListener("close", () => {
       ws = null;
       if (cancelled) return;
-      console.log("WebSocket closed with ", server, ", scheduling reconnect");
+      console.log("WebSocket closed with ", target, ", scheduling reconnect");
+      opts.onStatus?.(`Disconnected from ${target}, reconnecting…`);
       scheduleReconnect();
     });
   }

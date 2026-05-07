@@ -134,6 +134,7 @@ export default function Room() {
     return startSignaling(room, rtc, {
       initialServer,
       onLookupFailed: () => navigate("/"),
+      onStatus: (msg) => setEvents((prev) => [...prev, msg]),
     });
   }, [room, navigate, initialServer, rtc]);
 

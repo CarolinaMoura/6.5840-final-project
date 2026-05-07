@@ -1,0 +1,29 @@
+syntax = "proto3";
+package kv;
+option go_package = "6.5840-final-project/kv/kvpb;kvpb";
+
+
+service KV {
+  rpc Get(GetArgs) returns (GetReply);
+  rpc Put(PutArgs) returns (PutReply);
+}
+
+message GetArgs {
+  string key = 1;
+}
+
+message GetReply {
+  string value = 1;
+  uint64 version = 2;
+  string err = 3;
+}
+
+message PutArgs {
+  string key = 1;
+  string value = 2;
+  uint64 version = 3;
+}
+
+message PutReply {
+  string err = 1;
+}

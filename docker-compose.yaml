@@ -1,135 +1,107 @@
-# 3-node etcd cluster for local development.
-# Each node:
-#   - listens on 0.0.0.0:2379 (clients) and 0.0.0.0:2380 (peers) inside its container
-#   - advertises its container DNS name to its peers (etcd1/etcd2/etcd3)
-#   - exposes its client port to your Mac on 2379, 2389, 2399 respectively
+# 3-node signaling cluster. Each container runs both the fiber HTTP server
+# and a raft peer in the same process (raft replaces the old etcd cluster).
 #
-# From your Mac:    etcdctl --endpoints=localhost:2379,localhost:2389,localhost:2399 ...
-# From a container: etcd1:2379, etcd2:2379, etcd3:2379
+# Ports per container:
+#   - 8080 (internal): fiber HTTP / websocket  → host-mapped to 8081/8082/8083
+#   - 7001 (internal): raft + kv gRPC          → not host-mapped (intra-net only)
+#
+# Address spaces:
+#   - Raft peers (CLI args, intra-network):   node{1,2,3}:7001
+#   - Advertise addrs (browser-visible):      localhost:808{1,2,3}
+#
+# From your Mac:    open http://localhost:8081 (or 8082, 8083)
+# From a container: node1:7001, etc.
+#
+# Caching: each container has its own GOCACHE (a named volume) — sharing it
+# via a bind-mounted host dir deadlocks because Docker's bind-mount FS doesn't
+# play nice with Go's cache locks under concurrent compilation. Module cache
+# (immutable downloads) is shared safely.
 
-x-etcd-common: &etcd-common
-  image: quay.io/coreos/etcd:v3.5.12
-  restart: unless-stopped
+x-node-common: &node-common
+  image: golang:1.25
+  working_dir: /app
   networks:
-    - etcd-net
-
-x-etcd-env: &etcd-env
-  ETCD_INITIAL_CLUSTER: etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
-  ETCD_INITIAL_CLUSTER_STATE: new
-  ETCD_INITIAL_CLUSTER_TOKEN: dev-cluster-token
-  ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
-  ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
-  ETCD_LOG_LEVEL: info
+    - signaling-net
 
 services:
-  etcd1:
-    <<: *etcd-common
-    container_name: etcd1
-    hostname: etcd1
-    environment:
-      <<: *etcd-env
-      ETCD_NAME: etcd1
-      ETCD_ADVERTISE_CLIENT_URLS: http://etcd1:2379
-      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd1:2380
-    ports:
-      - "2379:2379"
+  node1:
+    <<: *node-common
+    container_name: node1
+    hostname: node1
     volumes:
-      - etcd1-data:/etcd-data
-    command:
-      - etcd
-      - --data-dir=/etcd-data
-
-  etcd2:
-    <<: *etcd-common
-    container_name: etcd2
-    hostname: etcd2
+      - .:/app
+      - gocache-node1:/root/.cache/go-build
+      - gomodcache:/go/pkg/mod
     environment:
-      <<: *etcd-env
-      ETCD_NAME: etcd2
-      ETCD_ADVERTISE_CLIENT_URLS: http://etcd2:2379
-      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd2:2380
-    ports:
-      - "2389:2379"
-    volumes:
-      - etcd2-data:/etcd-data
-    command:
-      - etcd
-      - --data-dir=/etcd-data
-
-  etcd3:
-    <<: *etcd-common
-    container_name: etcd3
-    hostname: etcd3
-    environment:
-      <<: *etcd-env
-      ETCD_NAME: etcd3
-      ETCD_ADVERTISE_CLIENT_URLS: http://etcd3:2379
-      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd3:2380
-    ports:
-      - "2399:2379"
-    volumes:
-      - etcd3-data:/etcd-data
-    command:
-      - etcd
-      - --data-dir=/etcd-data
-
-  signaling1:
-    image: golang:1.25
-    working_dir: /app
-    environment:
-      - ADVERTISE_ADDR=localhost:8081
-      - GOCACHE=/app/.gocache
-      - GOMODCACHE=/app/.gomodcache
+      ADVERTISE_ADDR: localhost:8081
+      ME: "0"
+      RAFT_DATA_DIR: /app/data/node1
+      SIGNALING_ADDRS: localhost:8081,localhost:8082,localhost:8083
     ports:
       - "8081:8080"
-    volumes:
-      - .:/app
-    networks:
-      - etcd-net
-    depends_on:
-      - etcd1
-      - etcd2
-      - etcd3
     command:
       - go
       - run
       - .
       - "8080"
-      - "etcd1:2379"
-      - "etcd2:2379"
-      - "etcd3:2379"
+      - "node1:7001"
+      - "node2:7001"
+      - "node3:7001"
 
-  signaling2:
-    image: golang:1.25
-    working_dir: /app
+  node2:
+    <<: *node-common
+    container_name: node2
+    hostname: node2
+    volumes:
+      - .:/app
+      - gocache-node2:/root/.cache/go-build
+      - gomodcache:/go/pkg/mod
     environment:
-      - ADVERTISE_ADDR=localhost:8082
-      - GOCACHE=/app/.gocache
-      - GOMODCACHE=/app/.gomodcache
+      ADVERTISE_ADDR: localhost:8082
+      ME: "1"
+      RAFT_DATA_DIR: /app/data/node2
+      SIGNALING_ADDRS: localhost:8081,localhost:8082,localhost:8083
     ports:
       - "8082:8080"
-    volumes:
-      - .:/app
-    networks:
-      - etcd-net
-    depends_on:
-      - etcd1
-      - etcd2
-      - etcd3
     command:
       - go
       - run
       - .
       - "8080"
-      - "etcd1:2379"
-      - "etcd2:2379"
-      - "etcd3:2379"
+      - "node1:7001"
+      - "node2:7001"
+      - "node3:7001"
+
+  node3:
+    <<: *node-common
+    container_name: node3
+    hostname: node3
+    volumes:
+      - .:/app
+      - gocache-node3:/root/.cache/go-build
+      - gomodcache:/go/pkg/mod
+    environment:
+      ADVERTISE_ADDR: localhost:8083
+      ME: "2"
+      RAFT_DATA_DIR: /app/data/node3
+      SIGNALING_ADDRS: localhost:8081,localhost:8082,localhost:8083
+    ports:
+      - "8083:8080"
+    command:
+      - go
+      - run
+      - .
+      - "8080"
+      - "node1:7001"
+      - "node2:7001"
+      - "node3:7001"
 
 networks:
-  etcd-net:
+  signaling-net:
     driver: bridge
 
 volumes:
-  etcd1-data:
-  etcd2-data:
-  etcd3-data:
+  gocache-node1:
+  gocache-node2:
+  gocache-node3:
+  gomodcache:

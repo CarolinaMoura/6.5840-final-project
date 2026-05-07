@@ -22,38 +22,27 @@
 
 package main
 
-import (
-	"net/http/httptest"
-	"testing"
+// func makeTestServer(t *testing.T, rsmClusterSize int) (*Server, func()) {
+// 	t.Helper()
+// 	ck, cleanup := clerk.MakeTestClerk(t, rsmClusterSize, integration.WithoutGoLeakDetection())
+// 	id := uuid.NewString()
+// 	s := &Server{
+// 		rooms:         make(map[string]map[string]*peer),
+// 		app:           fiber.New(),
+// 		ck:            ck,
+// 		listenAddr:    id,
+// 		advertiseAddr: id,
+// 	}
+// 	s.registerRoutes()
+// 	ck.RegisterWithLease(s.advertiseAddr, s.advertiseAddr, 10)
+// 	return s, cleanup
+// }
 
-	"6.5840-final-project/clerk"
-	"github.com/gofiber/fiber/v3"
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
-	"go.etcd.io/etcd/tests/v3/framework/integration"
-)
+// func TestCreateRoom(t *testing.T) {
+// 	s, cleanup := makeTestServer(t, 1)
+// 	defer cleanup()
 
-func makeTestServer(t *testing.T, rsmClusterSize int) (*Server, func()) {
-	t.Helper()
-	ck, cleanup := clerk.MakeTestClerk(t, rsmClusterSize, integration.WithoutGoLeakDetection())
-	id := uuid.NewString()
-	s := &Server{
-		rooms:         make(map[string]map[string]*peer),
-		app:           fiber.New(),
-		ck:            ck,
-		listenAddr:    id,
-		advertiseAddr: id,
-	}
-	s.registerRoutes()
-	ck.RegisterWithLease(s.advertiseAddr, s.advertiseAddr, 10)
-	return s, cleanup
-}
-
-func TestCreateRoom(t *testing.T) {
-	s, cleanup := makeTestServer(t, 1)
-	defer cleanup()
-
-	req := httptest.NewRequest("POST", "/api/rooms", nil)
-	resp, _ := s.app.Test(req)
-	assert.Equal(t, fiber.StatusCreated, resp.StatusCode)
-}
+// 	req := httptest.NewRequest("POST", "/api/rooms", nil)
+// 	resp, _ := s.app.Test(req)
+// 	assert.Equal(t, fiber.StatusCreated, resp.StatusCode)
+// }

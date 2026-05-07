@@ -5,124 +5,108 @@ import (
 	"fmt"
 	"time"
 
+	"6.5840-final-project/kv/kvpb"
 	rpc "6.5840-final-project/rsm/rpc"
-	clientv3 "go.etcd.io/etcd/client/v3"
+
+	"google.golang.org/grpc"
 )
 
-const clerkTimeout = 5 * time.Second
-const dialTimeout = 5 * time.Second
+const callTimeout = 5 * time.Second
 
 type Clerk struct {
-	clnt *clientv3.Client
+	peers   []kvpb.KVClient // gRPC stubs, one per kv peer
+	servers []string        // advertise addresses returned by Signalings()
+	leader  int             // last successful leader (index into peers[])
 }
 
-func MakeClerk(servers []string) (*Clerk, error) {
-	cfg := clientv3.Config{
-		Endpoints:   servers,
-		DialTimeout: dialTimeout,
+// conns is one gRPC client connection per peer (shared with the raft layer
+// — kv stubs are built on top of the same connections to avoid opening a
+// second TCP/H2 link per peer). servers is the advertise-address list
+// returned by Signalings(). The caller owns conns and is responsible for
+// closing them on shutdown.
+func MakeClerk(conns []*grpc.ClientConn, servers []string) (*Clerk, error) {
+	if len(conns) == 0 {
+		return nil, fmt.Errorf("MakeClerk: conns is empty")
 	}
-	clnt, err := clientv3.New(cfg)
-	if err != nil {
-		return nil, err
+	peers := make([]kvpb.KVClient, len(conns))
+	for i, c := range conns {
+		peers[i] = kvpb.NewKVClient(c)
 	}
-	return &Clerk{clnt: clnt}, nil
+	return &Clerk{peers: peers, servers: servers}, nil
 }
 
-func (ck *Clerk) Close() {
-	ck.clnt.Close()
-}
-
-// Returns the advertise addresses of every registered signaling server,
-// by reading all keys under the "signalings/" prefix.
-func (ck *Clerk) Signalings() ([]string, rpc.Err) {
-	ctx, cancel := context.WithTimeout(context.Background(), clerkTimeout)
-	defer cancel()
-
-	resp, err := ck.clnt.Get(ctx, "server/", clientv3.WithPrefix())
-	if err != nil {
-		fmt.Println("Error listing signalings:", err)
-		return nil, rpc.ErrEtcd
-	}
-	addrs := make([]string, 0, len(resp.Kvs))
-	for _, kv := range resp.Kvs {
-		addrs = append(addrs, string(kv.Value))
-	}
-	return addrs, rpc.OK
+func (ck *Clerk) Leader() int {
+	return ck.leader
 }
 
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
-	ctx, cancel := context.WithTimeout(context.Background(), clerkTimeout)
-	defer cancel()
+	args := &kvpb.GetArgs{Key: key}
 
-	resp, err := ck.clnt.Get(ctx, key)
-	if err != nil {
-		fmt.Println("Error getting key:", err)
-		return "", 0, rpc.ErrEtcd
-	}
-	if len(resp.Kvs) == 0 {
-		return "", 0, rpc.ErrNoKey
-	}
-	kv := resp.Kvs[0]
-	return string(kv.Value), rpc.Tversion(kv.Version), rpc.OK
-}
-
-// Registers (key, value) under a self-renewing lease. Returns a stop
-// function that revokes the lease (and so deletes the key) when called.
-// The lease also expires on its own if the process dies without calling stop.
-func (ck *Clerk) RegisterWithLease(addr, value string, ttlSeconds int64) (func(), error) {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	lease, err := ck.clnt.Grant(ctx, ttlSeconds)
-	if err != nil {
+	leader := ck.leader
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		reply, err := ck.peers[leader].Get(ctx, args)
 		cancel()
-		return nil, err
-	}
-	if _, err := ck.clnt.Put(ctx, "server/"+addr, value, clientv3.WithLease(lease.ID)); err != nil {
-		cancel()
-		return nil, err
-	}
-	ch, err := ck.clnt.KeepAlive(ctx, lease.ID)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	// Drain renewal acks so the channel buffer doesn't fill and stall keep-alive.
-	go func() {
-		for range ch {
+		ok := err == nil
+		if ok {
+			if rpc.Err(reply.Err) == rpc.ErrWrongLeader {
+				leader = (leader + 1) % len(ck.peers)
+			} else {
+				ck.leader = leader
+				return reply.Value, rpc.Tversion(reply.Version), rpc.Err(reply.Err)
+			}
+		} else {
+			leader = (leader + 1) % len(ck.peers)
 		}
-	}()
-
-	return func() {
-		cancel()
-		revokeCtx, revokeCancel := context.WithTimeout(context.Background(), clerkTimeout)
-		defer revokeCancel()
-		ck.clnt.Revoke(revokeCtx, lease.ID)
-	}, nil
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
-	ctx, cancel := context.WithTimeout(context.Background(), clerkTimeout)
-	defer cancel()
+	args := &kvpb.PutArgs{Key: key, Value: value, Version: uint64(version)}
 
-	// Put only if the key's current version matches.
-	// On failure, the Else-Get tells us whether the key was missing
-	// (ErrNoKey) or merely at a different version (ErrVersion).
-	resp, err := ck.clnt.Txn(ctx).
-		If(clientv3.Compare(clientv3.Version(key), "=", int64(version))).
-		Then(clientv3.OpPut(key, value)).
-		Else(clientv3.OpGet(key)).
-		Commit()
-	if err != nil {
-		fmt.Println("Error putting key:", err)
-		return rpc.ErrEtcd
+	leader := ck.leader
+
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		firstReply, err := ck.peers[leader].Put(ctx, args)
+		cancel()
+		firstOk := err == nil
+		if firstOk {
+			if rpc.Err(firstReply.Err) == rpc.ErrWrongLeader {
+				leader = (leader + 1) % len(ck.peers)
+				break
+			} else {
+				ck.leader = leader
+				return rpc.Err(firstReply.Err)
+			}
+		} else {
+			break
+		}
 	}
-	if resp.Succeeded {
-		return rpc.OK
+
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		retryReply, err := ck.peers[leader].Put(ctx, args)
+		cancel()
+		retryOk := err == nil
+		if retryOk {
+			if rpc.Err(retryReply.Err) == rpc.ErrWrongLeader {
+				leader = (leader + 1) % len(ck.peers)
+			} else if rpc.Err(retryReply.Err) == rpc.ErrVersion {
+				ck.leader = leader
+				return rpc.ErrMaybe
+			} else {
+				ck.leader = leader
+				return rpc.Err(retryReply.Err)
+			}
+		} else {
+			leader = (leader + 1) % len(ck.peers)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	if getResp := resp.Responses[0].GetResponseRange(); getResp == nil || len(getResp.Kvs) == 0 {
-		return rpc.ErrNoKey
-	}
-	return rpc.ErrVersion
 }
 
-// [TODO] implement Sync
+func (ck *Clerk) Signalings() ([]string, rpc.Err) {
+	return ck.servers, rpc.OK
+}

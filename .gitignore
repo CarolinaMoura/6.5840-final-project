@@ -16,3 +16,6 @@ web/.env.*.local
 # Docker
 .gocache
 .gomodcache
+
+# Persistance
+data

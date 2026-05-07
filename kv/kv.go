@@ -2,9 +2,11 @@ package kv
 
 import (
 	"bytes"
+	"context"
 	"sync"
 
 	"6.5840-final-project/encoder"
+	"6.5840-final-project/kv/kvpb"
 	"6.5840-final-project/rsm"
 	"6.5840-final-project/rsm/rpc"
 )
@@ -35,6 +37,11 @@ func init() {
 }
 
 type KVServer struct {
+	// Embedded so KVServer satisfies the kvpb.KVServer interface and can be
+	// registered directly on a gRPC server. The Get/Put methods below
+	// override the unimplemented stubs.
+	kvpb.UnimplementedKVServer
+
 	me  int
 	rsm *rsm.RSM
 
@@ -130,20 +137,35 @@ func (kv *KVServer) Restore(data []byte) {
 	kv.store = store
 }
 
-func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
-	err, res := kv.rsm.Submit(Req{Type: Get, GetArgs: *args})
+// Get is the gRPC handler. Submits a Get op to the RSM and translates the
+// reply into proto form. Returns ErrWrongLeader (as a string) when this
+// node isn't the current raft leader so the clerk can retry against a
+// different peer.
+func (kv *KVServer) Get(ctx context.Context, in *kvpb.GetArgs) (*kvpb.GetReply, error) {
+	args := rpc.GetArgs{Key: in.Key}
+	err, res := kv.rsm.Submit(Req{Type: Get, GetArgs: args})
 	if err == rpc.ErrWrongLeader {
-		reply.Err = rpc.ErrWrongLeader
-		return
+		return &kvpb.GetReply{Err: string(rpc.ErrWrongLeader)}, nil
 	}
-	*reply = res.(rpc.GetReply)
+	reply := res.(rpc.GetReply)
+	return &kvpb.GetReply{
+		Value:   reply.Value,
+		Version: uint64(reply.Version),
+		Err:     string(reply.Err),
+	}, nil
 }
 
-func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
-	err, res := kv.rsm.Submit(Req{Type: Put, PutArgs: *args})
-	if err == rpc.ErrWrongLeader {
-		reply.Err = rpc.ErrWrongLeader
-		return
+// Put is the gRPC handler. Same shape as Get.
+func (kv *KVServer) Put(ctx context.Context, in *kvpb.PutArgs) (*kvpb.PutReply, error) {
+	args := rpc.PutArgs{
+		Key:     in.Key,
+		Value:   in.Value,
+		Version: rpc.Tversion(in.Version),
 	}
-	*reply = res.(rpc.PutReply)
+	err, res := kv.rsm.Submit(Req{Type: Put, PutArgs: args})
+	if err == rpc.ErrWrongLeader {
+		return &kvpb.PutReply{Err: string(rpc.ErrWrongLeader)}, nil
+	}
+	reply := res.(rpc.PutReply)
+	return &kvpb.PutReply{Err: string(reply.Err)}, nil
 }

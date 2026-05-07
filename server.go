@@ -12,10 +12,12 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"6.5840-final-project/clerk"
 	"6.5840-final-project/kv"
+	"6.5840-final-project/kv/kvpb"
 	"6.5840-final-project/raft"
 	"6.5840-final-project/raft/persister"
 	pb "6.5840-final-project/raft/raftpb"
@@ -56,8 +58,9 @@ type Server struct {
 	listenAddr    string // where to bind (e.g. "0.0.0.0:8080")
 	advertiseAddr string // how peers/clients reach us (e.g. "localhost:8082")
 	ck            *clerk.Clerk
-	kv            *kv.KVServer // local replicated kv (will replace etcd)
-	raftShutdown  func()       // tears down raft gRPC + persister
+	kv            *kv.KVServer        // local replicated kv (will replace etcd)
+	raftShutdown  func()              // tears down raft gRPC + persister
+	peerConns     []*grpc.ClientConn  // shared by raft + clerk; closed in Shutdown
 }
 
 // Checks if a room is valid (6 alphanumeric chars).
@@ -310,50 +313,61 @@ func (s *Server) Shutdown() error {
 	if s.raftShutdown != nil {
 		s.raftShutdown()
 	}
+	for _, c := range s.peerConns {
+		_ = c.Close()
+	}
 	return s.app.Shutdown()
 }
 
-// peers is the cluster's full address list (e.g. ["host1:7001","host2:7001",
-// "host3:7001"]); peers[me] is THIS node — we listen there and also dial
-// ourselves so Raft can RPC itself like any other peer.
-//
-// Returns the RSM and a shutdown func that stops gRPC and closes resources.
-func bootRaft(me int, peers []string, dataDir string, sm rsm.StateMachine) (*rsm.RSM, func(), error) {
-	if me < 0 || me >= len(peers) {
-		return nil, nil, fmt.Errorf("me=%d out of range for %d peers", me, len(peers))
-	}
-
-	// Listen on this node's address for incoming Raft RPCs
-	lis, err := net.Listen("tcp", peers[me])
-	if err != nil {
-		return nil, nil, fmt.Errorf("listen %s: %w", peers[me], err)
-	}
-
-	conns := make([]*grpc.ClientConn, len(peers))
-	clients := make([]pb.RaftClient, len(peers))
-	closeConns := func() {
-		for _, c := range conns {
-			if c != nil {
-				_ = c.Close()
-			}
-		}
-	}
-	for i, addr := range peers {
+// dialPeers opens one gRPC client connection per address. The returned
+// conns can host multiple typed stubs (raft + kv), so the same TCP/H2
+// connection serves both services rather than each opening its own.
+func dialPeers(addrs []string) ([]*grpc.ClientConn, error) {
+	conns := make([]*grpc.ClientConn, len(addrs))
+	for i, addr := range addrs {
 		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
-			_ = lis.Close()
-			closeConns()
-			return nil, nil, fmt.Errorf("dial peer %d (%s): %w", i, addr, err)
+			for _, c := range conns {
+				if c != nil {
+					_ = c.Close()
+				}
+			}
+			return nil, fmt.Errorf("dial peer %d (%s): %w", i, addr, err)
 		}
 		conns[i] = conn
-		clients[i] = pb.NewRaftClient(conn)
+	}
+	return conns, nil
+}
+
+// conns is one gRPC client connection per peer (in cluster index order);
+// listenAddr is where this node listens for incoming raft+kv traffic.
+//
+// extraRegister is called after the raft service is registered but before
+// Serve starts, so callers can multiplex other gRPC services (e.g. kv) on
+// the same listener. May be nil.
+//
+// Returns the RSM and a shutdown func that stops gRPC and closes the
+// persister. Connection cleanup is the caller's responsibility (since
+// the conns are shared with the clerk).
+func bootRaft(me int, conns []*grpc.ClientConn, listenAddr, dataDir string, sm rsm.StateMachine, extraRegister func(*grpc.Server)) (*rsm.RSM, func(), error) {
+	if me < 0 || me >= len(conns) {
+		return nil, nil, fmt.Errorf("me=%d out of range for %d peers", me, len(conns))
+	}
+
+	lis, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listen %s: %w", listenAddr, err)
+	}
+
+	clients := make([]pb.RaftClient, len(conns))
+	for i, c := range conns {
+		clients[i] = pb.NewRaftClient(c)
 	}
 
 	// On-disk persister for raft log + snapshot.
 	pst, err := persister.New(fmt.Sprintf("%s/raft-%d.db", dataDir, me))
 	if err != nil {
 		_ = lis.Close()
-		closeConns()
 		return nil, nil, fmt.Errorf("persister: %w", err)
 	}
 
@@ -361,12 +375,14 @@ func bootRaft(me int, peers []string, dataDir string, sm rsm.StateMachine) (*rsm
 	rfServer, ok := rsmInst.Raft().(*raft.Raft)
 	if !ok {
 		_ = lis.Close()
-		closeConns()
 		_ = pst.Close()
 		return nil, nil, fmt.Errorf("rsm.Raft() did not return *raft.Raft")
 	}
 	grpcSrv := grpc.NewServer()
 	pb.RegisterRaftServer(grpcSrv, rfServer)
+	if extraRegister != nil {
+		extraRegister(grpcSrv)
+	}
 
 	go func() {
 		if err := grpcSrv.Serve(lis); err != nil {
@@ -376,7 +392,6 @@ func bootRaft(me int, peers []string, dataDir string, sm rsm.StateMachine) (*rsm
 
 	shutdown := func() {
 		grpcSrv.GracefulStop()
-		closeConns()
 		_ = pst.Close()
 	}
 	return rsmInst, shutdown, nil
@@ -401,16 +416,35 @@ func makeServer(port int, raftPeers []string) *Server {
 		dataDir = "."
 	}
 
-	// Start KV server
+	// Dial every peer once; raft and the clerk share the connections so
+	// each peer relationship uses one TCP/H2 link, not two.
+	peerConns, err := dialPeers(raftPeers)
+	if err != nil {
+		log.Fatal("dialPeers:", err)
+	}
+
+	// Start KV server. Registered as a gRPC service on the same listener
+	// as raft (multiplexed via the extraRegister hook), so the same
+	// connections in peerConns serve both raft and kv traffic.
 	kvSM := kv.NewKVServer(me)
-	rsmInst, raftShutdown, err := bootRaft(me, raftPeers, dataDir, kvSM)
+	rsmInst, raftShutdown, err := bootRaft(me, peerConns, raftPeers[me], dataDir, kvSM, func(s *grpc.Server) {
+		kvpb.RegisterKVServer(s, kvSM)
+	})
 	if err != nil {
 		log.Fatal("bootRaft:", err)
 	}
 	kvSM.Bind(rsmInst)
 
-	// Create clerk
-	ck, err := clerk.MakeClerk(raftPeers)
+	// Create clerk. SIGNALING_ADDRS is the comma-separated list of advertise
+	// addresses for every signaling — Signalings() returns these so handlers
+	// can route browsers to the right HTTP endpoint. It's distinct from the
+	// raft peer list (which uses internal hostnames + the raft gRPC port).
+	sigCSV := os.Getenv("SIGNALING_ADDRS")
+	if sigCSV == "" {
+		log.Fatal("SIGNALING_ADDRS is required (comma-separated advertise addresses)")
+	}
+	sigAddrs := strings.Split(sigCSV, ",")
+	ck, err := clerk.MakeClerk(peerConns, sigAddrs)
 	if err != nil {
 		log.Fatal("MakeClerk:", err)
 	}
@@ -423,6 +457,7 @@ func makeServer(port int, raftPeers []string) *Server {
 		kv:            kvSM,
 		raftShutdown:  raftShutdown,
 		ck:            ck,
+		peerConns:     peerConns,
 	}
 
 	s.registerRoutes()

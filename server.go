@@ -12,7 +12,6 @@ import (
 	"os"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 
 	"6.5840-final-project/clerk"
@@ -58,9 +57,9 @@ type Server struct {
 	listenAddr    string // where to bind (e.g. "0.0.0.0:8080")
 	advertiseAddr string // how peers/clients reach us (e.g. "localhost:8082")
 	ck            *clerk.Clerk
-	kv            *kv.KVServer        // local replicated kv (will replace etcd)
-	raftShutdown  func()              // tears down raft gRPC + persister
-	peerConns     []*grpc.ClientConn  // shared by raft + clerk; closed in Shutdown
+	kv            *kv.KVServer       // local replicated kv (will replace etcd)
+	raftShutdown  func()             // tears down raft gRPC + persister
+	peerConns     []*grpc.ClientConn // shared by raft + clerk; closed in Shutdown
 }
 
 // Checks if a room is valid (6 alphanumeric chars).
@@ -347,8 +346,7 @@ func dialPeers(addrs []string) ([]*grpc.ClientConn, error) {
 // the same listener. May be nil.
 //
 // Returns the RSM and a shutdown func that stops gRPC and closes the
-// persister. Connection cleanup is the caller's responsibility (since
-// the conns are shared with the clerk).
+// persister. Connection cleanup is the caller's responsibility.
 func bootRaft(me int, conns []*grpc.ClientConn, listenAddr, dataDir string, sm rsm.StateMachine, extraRegister func(*grpc.Server)) (*rsm.RSM, func(), error) {
 	if me < 0 || me >= len(conns) {
 		return nil, nil, fmt.Errorf("me=%d out of range for %d peers", me, len(conns))
@@ -435,16 +433,10 @@ func makeServer(port int, raftPeers []string) *Server {
 	}
 	kvSM.Bind(rsmInst)
 
-	// Create clerk. SIGNALING_ADDRS is the comma-separated list of advertise
-	// addresses for every signaling — Signalings() returns these so handlers
-	// can route browsers to the right HTTP endpoint. It's distinct from the
-	// raft peer list (which uses internal hostnames + the raft gRPC port).
-	sigCSV := os.Getenv("SIGNALING_ADDRS")
-	if sigCSV == "" {
-		log.Fatal("SIGNALING_ADDRS is required (comma-separated advertise addresses)")
-	}
-	sigAddrs := strings.Split(sigCSV, ",")
-	ck, err := clerk.MakeClerk(peerConns, sigAddrs)
+	// Create clerk. The list of live signalings is now discovered
+	// dynamically via heartbeats in the kv (see ck.RegisterWithLease /
+	// ck.Signalings) — no static SIGNALING_ADDRS env var needed.
+	ck, err := clerk.MakeClerk(peerConns)
 	if err != nil {
 		log.Fatal("MakeClerk:", err)
 	}
@@ -461,6 +453,16 @@ func makeServer(port int, raftPeers []string) *Server {
 	}
 
 	s.registerRoutes()
+
+	// Start heartbeating advertise addr
+	stopLease := ck.RegisterWithLease(advertise, 30)
+	prev := s.raftShutdown
+	s.raftShutdown = func() {
+		stopLease()
+		if prev != nil {
+			prev()
+		}
+	}
 	return s
 }
 

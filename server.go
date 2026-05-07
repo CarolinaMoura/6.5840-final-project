@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
 	"6.5840-final-project/clerk"
 	"6.5840-final-project/kv"
@@ -24,6 +25,7 @@ import (
 	"6.5840-final-project/rsm/rpc"
 	"github.com/gofiber/contrib/v3/websocket"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/cors"
 	"github.com/gofiber/fiber/v3/middleware/static"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
@@ -262,6 +264,51 @@ func (s *Server) removePeer(room, id string) {
 	s.mu.Unlock()
 }
 
+// Walks every room hosted on this signaling and asks the kv
+// who's currently assigned to each. If we're no longer the assigned
+// signaling (or the room has been deleted), we close every WS for that
+// room — clients' onclose handlers re-lookup and reconnect to whoever
+// is now assigned. This catches the case where a node was reassigned
+// after a heartbeat miss but its existing WS connections are still up.
+func (s *Server) evictWrongRooms() {
+	s.mu.RLock()
+	rooms := make([]string, 0, len(s.rooms))
+	for room := range s.rooms {
+		rooms = append(rooms, room)
+	}
+	s.mu.RUnlock()
+
+	for _, room := range rooms {
+		assigned, err := s.assignedSignaling(room)
+		switch err {
+		case rpc.OK:
+			if assigned == s.advertiseAddr {
+				continue
+			}
+			fmt.Printf("Evicting room %q: assigned to %q, we are %q\n", room, assigned, s.advertiseAddr)
+		case rpc.ErrNoKey:
+			fmt.Printf("Evicting room %q: room no longer exists\n", room)
+		default:
+			continue // transient kv error; try again next tick
+		}
+		s.evictRoom(room)
+	}
+}
+
+// evictRoom drops the room's entry and closes every peer's underlying WS.
+// Each handler's ReadMessage then returns an error and the handler exits,
+// firing its defers (removePeer, peer-left broadcast — both safe to run
+// against an already-deleted room).
+func (s *Server) evictRoom(room string) {
+	s.mu.Lock()
+	peers := s.rooms[room]
+	delete(s.rooms, room)
+	s.mu.Unlock()
+	for _, p := range peers {
+		_ = p.conn.Close()
+	}
+}
+
 // Pre-upgrade gate for /ws/rooms/:room — validates room exists before upgrading.
 // @throws 400 if room is malformed
 // @throws 404 if room doesn't exist
@@ -291,6 +338,11 @@ func (s *Server) wsGate(c fiber.Ctx) error {
 }
 
 func (s *Server) registerRoutes() {
+	// Allow the SPA to fetch /api/rooms across signalings — necessary when
+	// the origin signaling dies and the client needs to query a peer for
+	// the new room assignment.
+	s.app.Use(cors.New())
+
 	s.app.Post("/api/rooms", s.handleCreateRoom)
 	s.app.Get("/api/rooms/:room", s.handleLookupRoom)
 
@@ -456,8 +508,26 @@ func makeServer(port int, raftPeers []string) *Server {
 
 	// Start heartbeating advertise addr
 	stopLease := ck.RegisterWithLease(advertise, 30)
+
+	// Eviction ticker — every 10s check whether the rooms we host are still
+	// assigned to us; if not, close their WS so clients reconnect elsewhere.
+	stopEvict := make(chan struct{})
+	go func() {
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopEvict:
+				return
+			case <-t.C:
+				s.evictWrongRooms()
+			}
+		}
+	}()
+
 	prev := s.raftShutdown
 	s.raftShutdown = func() {
+		close(stopEvict)
 		stopLease()
 		if prev != nil {
 			prev()

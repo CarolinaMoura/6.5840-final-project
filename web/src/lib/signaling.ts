@@ -1,8 +1,36 @@
 import { RTC } from "./rtc";
 
+// [TODO] don't hardcode this
+const FALLBACK_HOSTS = ["localhost:8081", "localhost:8082", "localhost:8083"];
+
 interface StartOpts {
   initialServer?: string;
   onLookupFailed?: () => void;
+}
+
+async function lookupRoom(room: string): Promise<string> {
+  const seen = new Set<string>();
+  const candidates = [location.host, ...FALLBACK_HOSTS].filter((h) => {
+    if (seen.has(h)) return false;
+    seen.add(h);
+    return true;
+  });
+  for (const host of candidates) {
+    try {
+      const res = await fetch(
+        `${location.protocol}//${host}/api/rooms/${room}`,
+      );
+      if (res.status === 404) {
+        throw "not_found";
+      }
+      if (!res.ok) continue;
+      return (await res.json()).server as string;
+    } catch (e) {
+      if (e === "not_found") throw e;
+      // try next host
+    }
+  }
+  throw "all_unreachable";
 }
 
 /**
@@ -31,17 +59,13 @@ export function startSignaling(
     let server = attempt === 0 ? opts.initialServer : undefined;
     if (!server) {
       try {
-        const res = await fetch(`/api/rooms/${room}`);
-        if (res.status === 404) {
+        server = await lookupRoom(room);
+      } catch (e) {
+        if (e === "not_found") {
           opts.onLookupFailed?.();
           return;
         }
-        if (!res.ok) {
-          scheduleReconnect();
-          return;
-        }
-        server = (await res.json()).server;
-      } catch {
+        // "all_unreachable" or unexpected — back off and retry.
         scheduleReconnect();
         return;
       }

@@ -95,7 +95,7 @@ export default function Room() {
       onData: (_peerId, data) => {
         const peer = peerRef.current;
         if (!peer) return;
-        // preserve the caret 
+        // preserve the caret
         const prevCaret = textareaRef.current?.selectionStart ?? null;
         peer.applyUpdate(data);
         const next = peer.toString();
@@ -108,10 +108,16 @@ export default function Room() {
         if (peerRef.current && rtcRef.current) {
           peerRef.current.broadcast(rtcRef.current);
         }
-   
+
         setEvents((prev) => [...prev, `Peers changed: ${peers.join(", ")}`]);
       },
       onWelcome: (myId) => {
+        // For reconnects
+        if (peerRef.current) {
+          if (rtcRef.current) peerRef.current.broadcast(rtcRef.current);
+          setEvents((prev) => [...prev, `Reconnected`]);
+          return;
+        }
         hashStringToUUID(myId).then((uuid) => {
           peerRef.current = new TextPeer(uuid);
           setText(peerRef.current.toString());

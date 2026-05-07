@@ -1,5 +1,7 @@
 TODO: add roundtrip check for client (bc server might have not died for it)
 TODO: fix leases
+TODO: acknowledge wall clock issues (fine bc every node in the cluster runs in the same machine)
+TODO: mention eviction ticker to avoid split brain within the room
 
 # Cluster
 

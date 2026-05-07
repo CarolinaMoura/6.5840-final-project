@@ -36,7 +36,7 @@ Each signaling reads `ADVERTISE_ADDR` (the host:port browsers should use to reac
 - **Room creation (`POST /api/rooms`)**: picks a random live signaling from `server/*`, writes `room/<id> -> <addr>` in etcd, returns `{room, server}` to the client.
 - **Room lookup (`GET /api/rooms/:room`)**: reads `room/<id>` from etcd. If the recorded server is no longer in the live set (lease expired), reassigns the room to a live signaling and returns the new addr.
 - **Joining (`GET /api/ws/rooms/:room`)**: a `wsGate` middleware validates the room and rejects with 404 if this signaling isn't the assigned one; otherwise the WS is upgraded.
-- **Client reconnect**: on WS close, the client re-fetches `/api/rooms/:room` (which reassigns the server if previous died) and reconnects with exponential backoff (500ms → 10s cap). The RTC instance is kept alive across signaling drops so existing WebRTC peer connections survive.
+- **Client reconnect**: on WS close, the client re-fetches `/api/rooms/:room` (which reassigns the server if previous died) and reconnects with exponential backoff. The RTC instance is kept alive across signaling drops so existing WebRTC peer connections survive.
 
 ## API endpoints
 

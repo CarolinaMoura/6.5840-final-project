@@ -1,6 +1,3 @@
-- TODO: acknowledge wall clock issues (fine bc every node in the cluster runs in the same machine)
-- TODO: mention eviction ticker to avoid split brain within the room
-
 # Cluster
 
 ## Prerequisites

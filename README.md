@@ -18,11 +18,12 @@ If it prints engine info you're good; if it errors with "failed to connect to th
 
 ### Building the cluster
 
-The local stack is an etcd cluster (N nodes) plus M signaling servers, defined in `docker-compose.yaml` (currently N=3 and M=2). From the root dir:
+From the root dir:
 
 ```
 make cluster
 ```
+That will spin-up 2 nodes. You can change this number by modifying the `docker-compose.yaml` file.
 
 Open the app at <http://localhost:8081> or <http://localhost:8082>. Both signalings serve the same frontend; rooms are coordinated through etcd so they don't need to know about each other directly.
 
@@ -44,11 +45,11 @@ Each signaling reads `ADVERTISE_ADDR` (the host:port browsers should use to reac
 | /api/rooms/:room    | GET    | returns `{server}` for a room; reassigns to a live signaling if the recorded one died    |
 | /api/ws/rooms/:room | GET    | upgrades to WebSocket and joins the room (rejects with 404 if served by wrong signaling) |
 
-# [currently not used] RPC definitions
+# gRPC definitions
 
 ## raftpb
 
-If you change `raft.proto`, run `make proto` to generate the new gRPC stubs. If that fails, you may need to install protoc and the protoc-gen-go plugin.
+If you change `raft.proto` or `kv.proto`, run `make proto` to generate the new gRPC stubs. If that fails, you may need to install protoc and the protoc-gen-go plugin.
 
 # Testing
 
@@ -57,7 +58,3 @@ To run all tests, run the following command from the root dir:
 ```
 make test
 ```
-
-# TODO
-
-- Document limitation for users behind symmetric NAT or commit to the Cloudflare TURN.

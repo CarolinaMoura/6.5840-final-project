@@ -11,8 +11,10 @@ import { RTC } from "../lib/rtc";
 import { TextPeer } from "../lib/textPeer";
 
 /*
-Each peer pushes its state vector to every other peer at most once per SYNC_INTERVAL_MS;
-the receiver replies with the insert diff plus the current tombstone set.
+Each peer broadcasts a single batched "update" message to every connected peer at
+most once per SYNC_INTERVAL_MS, containing only what's new since the previous
+broadcast (or the most recently applied incoming update). Joining peers catch
+up via a one-shot stateVector exchange triggered by onPeerReady.
 */
 const SYNC_INTERVAL_MS = 200;
 
@@ -149,15 +151,13 @@ export default function Room() {
   }, [text]);
 
   /*
-  Periodically sync with other peers.
+  Periodically broadcast batched changes to every connected peer.
   */
   useEffect(() => {
     const id = setInterval(() => {
       const peer = peerRef.current;
       if (!peer) return;
-      for (const peerId of rtc.peerIds) {
-        peer.syncWithPeer(rtc, peerId);
-      }
+      peer.broadcastChanges(rtc);
     }, SYNC_INTERVAL_MS);
     return () => clearInterval(id);
   }, [rtc]);

@@ -127,11 +127,12 @@ export class TextPeer {
       this.refreshTombstoneOrder();
       // merge the received items' implicit SV into lastBroadcastSV
       // we do NOT use the new state vector because it would mark the local edits as broadcasted
-      for (const item of msg.items) {
-        const cur = this.lastBroadcastSV.get(item.id.userID) ?? 0;
-        const next = item.id.opCounter + 1;
-        if (next > cur) this.lastBroadcastSV.set(item.id.userID, next);
-      }
+      // this optimization only works when in a fully connected peer graph
+      // for (const item of msg.items) {
+      //   const cur = this.lastBroadcastSV.get(item.id.userID) ?? 0;
+      //   const next = item.id.opCounter + 1;
+      //   if (next > cur) this.lastBroadcastSV.set(item.id.userID, next);
+      // }
       console.log("applyUpdate", peerId, JSON.stringify(msg));
       return;
     }

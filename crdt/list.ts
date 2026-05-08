@@ -4,12 +4,6 @@ const SENTINEL_USER: UUID = -1;
 const HEAD_ID: ID = new ID(SENTINEL_USER, 0);
 const TAIL_ID: ID = new ID(SENTINEL_USER, 1);
 
-type WireUpdate = {
-  items: YataItem[];
-};
-
-type WireStateVector = Record<string, number>;
-
 export class YataList implements YataType {
   private readonly ownerID: UUID;
   private opCounter: number;
@@ -22,7 +16,7 @@ export class YataList implements YataType {
     this.ownerID = uuid;
     this.opCounter = 0;
     this.itemById = new Map<string, YataItem>();
-    this.stateVector = new Map<UUID, number>();
+    this.stateVector = new YataStateVector();
     this.stateVector.set(uuid, 0);
 
     this.head = {
@@ -69,7 +63,7 @@ export class YataList implements YataType {
 
   getStateVector(): YataStateVector {
     // returns a copy to prevent mutation of the internal state vector.
-    return new Map(this.stateVector);
+    return new YataStateVector(this.stateVector);
   }
  
   private integrate(item: YataItem): void {
@@ -114,9 +108,8 @@ export class YataList implements YataType {
     this.bumpStateVector(item.id);
   }
 
-  applyUpdate(update: Uint8Array): void {
-    const wire = JSON.parse(new TextDecoder().decode(update)) as WireUpdate;
-    const pending: YataItem[] = wire.items ?? [];
+  applyUpdate(items: YataItem[]): void {
+    const pending: YataItem[] = [...items];
 
     // Items may arrive out of dependency order (an item's origins may not yet
     // exist locally). Repeatedly integrate everything whose origins are known,
@@ -152,24 +145,8 @@ export class YataList implements YataType {
     }
   }
 
-  encodeStateVector(): Uint8Array {
-    const obj: WireStateVector = {};
-    for (const [user, counter] of this.stateVector) {
-      obj[String(user)] = counter;
-    }
-    return new TextEncoder().encode(JSON.stringify(obj));
-  }
-
-  encodeStateAsUpdate(encodedTargetStateVector?: Uint8Array): Uint8Array {
-    const target: YataStateVector = new Map<UUID, number>();
-    if (encodedTargetStateVector && encodedTargetStateVector.byteLength > 0) {
-      const obj = JSON.parse(
-        new TextDecoder().decode(encodedTargetStateVector)
-      ) as WireStateVector;
-      for (const [user, counter] of Object.entries(obj)) {
-        target.set(Number(user), counter);
-      }
-    }
+  makeUpdate(targetStateVector?: YataStateVector): YataItem[] {
+    const target = targetStateVector ?? new YataStateVector();
 
     const items: YataItem[] = [];
     for (const item of this.itemById.values()) {
@@ -186,8 +163,7 @@ export class YataList implements YataType {
       return a.id.opCounter - b.id.opCounter;
     });
 
-    const wire: WireUpdate = { items };
-    return new TextEncoder().encode(JSON.stringify(wire));
+    return items;
   }
 
   /**
@@ -271,5 +247,30 @@ export class YataList implements YataType {
       cursor = this.getItem(cursor.right);
     }
     return out;
+  }
+
+  /**
+  Returns the keys of every currently-tombstoned non-sentinel item.
+  @returns an array of ID.key strings.
+  **/
+  getTombstoneKeys(): string[] {
+    const out: string[] = [];
+    for (const item of this.itemById.values()) {
+      if (this.isSentinel(item)) continue;
+      if (item.deleted) out.push(ID.key(item.id));
+    }
+    return out;
+  }
+
+  /**
+  Marks each item whose key is in `keys` as deleted. Unknown keys are
+  ignored.
+  @param keys - the keys (as produced by ID.key) of items to tombstone.
+  **/
+  applyTombstones(keys: string[]): void {
+    for (const key of keys) {
+      const item = this.itemById.get(key);
+      if (item && !this.isSentinel(item)) item.deleted = true;
+    }
   }
 }

@@ -87,6 +87,7 @@ type Handlers = {
   onData?: (peerId: string, data: string) => void; // Receive updates to the document
   onPeersChanged?: (peers: string[]) => void; // To maybe update the UI
   onWelcome?: (myId: string) => void; // Fired when the signaling server assigns us an id
+  onPeerReady?: (peerId: string) => void; // Fired when a peer's data channel transitions to "open"
 };
 
 export class RTC {
@@ -166,6 +167,10 @@ export class RTC {
     return this.myId;
   }
 
+  get peerIds(): string[] {
+    return [...this.channels.keys()];
+  }
+
   private send(msg: OutgoingSignal) {
     this.sendRaw(JSON.stringify(msg));
   }
@@ -214,7 +219,10 @@ export class RTC {
   private attachChannel(peerId: string, ch: RTCDataChannel) {
     this.channels.set(peerId, ch);
     ch.onmessage = (e) => this.handlers.onData?.(peerId, e.data);
-    ch.onopen = () => this.handlers.onPeersChanged?.([...this.channels.keys()]);
+    ch.onopen = () => {
+      this.handlers.onPeerReady?.(peerId);
+      this.handlers.onPeersChanged?.([...this.channels.keys()]);
+    };
     ch.onclose = () => {
       this.channels.delete(peerId);
       this.handlers.onPeersChanged?.([...this.channels.keys()]);

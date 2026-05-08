@@ -10,9 +10,11 @@ import { startSignaling } from "../lib/signaling";
 import { RTC } from "../lib/rtc";
 import { TextPeer } from "../lib/textPeer";
 
-// Local edits are flushed to peers at most once per BROADCAST_INTERVAL_MS;
-// bursts of typing within a single window collapse into one broadcast.
-const BROADCAST_INTERVAL_MS = 200;
+/*
+Each peer pushes its state vector to every other peer at most once per SYNC_INTERVAL_MS;
+the receiver replies with the insert diff plus the current tombstone set.
+*/
+const SYNC_INTERVAL_MS = 200;
 
 const TEXTAREA_STYLE: CSSProperties = {
   width: "100%",
@@ -87,34 +89,33 @@ export default function Room() {
   const peerRef = useRef<TextPeer | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingCaretRef = useRef<number | null>(null);
-  const dirtyRef = useRef(false);
   const rtcRef = useRef<RTC | null>(null);
 
   if (rtcRef.current === null) {
     rtcRef.current = new RTC({
-      onData: (_peerId, data) => {
+      onData: (peerId, data) => {
         const peer = peerRef.current;
-        if (!peer) return;
-        // preserve the caret
+        const rtc = rtcRef.current;
+        if (!peer || !rtc) return;
         const prevCaret = textareaRef.current?.selectionStart ?? null;
-        peer.applyUpdate(data);
+        peer.handleMessage(rtc, peerId, data);
         const next = peer.toString();
         if (prevCaret !== null) {
           pendingCaretRef.current = Math.min(prevCaret, next.length);
         }
         setText(next);
       },
+      onPeerReady: (peerId) => {
+        const peer = peerRef.current;
+        const rtc = rtcRef.current;
+        if (!peer || !rtc) return;
+        peer.syncWithPeer(rtc, peerId);
+      },
       onPeersChanged: (peers) => {
-        if (peerRef.current && rtcRef.current) {
-          peerRef.current.broadcast(rtcRef.current);
-        }
-
         setEvents((prev) => [...prev, `Peers changed: ${peers.join(", ")}`]);
       },
       onWelcome: (myId) => {
-        // For reconnects
         if (peerRef.current) {
-          if (rtcRef.current) peerRef.current.broadcast(rtcRef.current);
           setEvents((prev) => [...prev, `Reconnected`]);
           return;
         }
@@ -147,15 +148,17 @@ export default function Room() {
     }
   }, [text]);
 
-  // broadcast local edits to peers on a fixed interval
-  // TODO: change broadcasting to requesting from other peers using state vector
+  /*
+  Periodically sync with other peers.
+  */
   useEffect(() => {
     const id = setInterval(() => {
-      if (dirtyRef.current && peerRef.current) {
-        peerRef.current.broadcast(rtc);
-        dirtyRef.current = false;
+      const peer = peerRef.current;
+      if (!peer) return;
+      for (const peerId of rtc.peerIds) {
+        peer.syncWithPeer(rtc, peerId);
       }
-    }, BROADCAST_INTERVAL_MS);
+    }, SYNC_INTERVAL_MS);
     return () => clearInterval(id);
   }, [rtc]);
 
@@ -182,7 +185,6 @@ export default function Room() {
         pendingCaretRef.current = edit.index;
       }
       setText(peer.toString());
-      dirtyRef.current = true;
     };
 
     el.addEventListener("beforeinput", onBeforeInput);

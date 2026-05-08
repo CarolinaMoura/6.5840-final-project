@@ -51,7 +51,7 @@ describe("YataList", () => {
     list1.insertItem(0, "T");
     list1.insertItem(1, "A");
 
-    const update = list0.encodeStateAsUpdate();
+    const update = list0.makeUpdate();
     list1.applyUpdate(update);
 
     expect(getListAsString(list1)).toBe("YATA");
@@ -63,11 +63,11 @@ describe("YataList", () => {
     a.insertItem(1, "I");
 
     const b = new YataList(1);
-    b.applyUpdate(a.encodeStateAsUpdate());
+    b.applyUpdate(a.makeUpdate());
     expect(getListAsString(b)).toBe("HI");
 
     a.insertItem(2, "!");
-    const delta = a.encodeStateAsUpdate(b.encodeStateVector());
+    const delta = a.makeUpdate(b.getStateVector());
     b.applyUpdate(delta);
 
     expect(getListAsString(b)).toBe("HI!");
@@ -80,32 +80,45 @@ describe("YataList", () => {
     a.insertItem(0, "X");
     b.insertItem(0, "Y");
 
-    const aSV = a.encodeStateVector();
-    const bSV = b.encodeStateVector();
-    a.applyUpdate(b.encodeStateAsUpdate(aSV));
-    b.applyUpdate(a.encodeStateAsUpdate(bSV));
+    const aSV = a.getStateVector();
+    const bSV = b.getStateVector();
+    a.applyUpdate(b.makeUpdate(aSV));
+    b.applyUpdate(a.makeUpdate(bSV));
 
     expect(a.length()).toBe(2);
     expect(b.length()).toBe(2);
     expect(getListAsString(a)).toBe(getListAsString(b));
   });
  
+  it("propagates tombstones via the deletes channel after both peers have the item", () => {
+    const a = new YataList(0);
+    const b = new YataList(1);
+    a.insertItem(0, "X");
+    b.applyUpdate(a.makeUpdate());
+    expect(getListAsString(b)).toBe("X");
+
+    a.deleteItem(0);
+    b.applyUpdate(a.makeUpdate(b.getStateVector()));
+    b.applyTombstones(a.getTombstoneKeys());
+    expect(b.length()).toBe(0);
+  });
+
   it("merge handles cross-user origin dependencies", () => {
     const a = new YataList(0);
     const b = new YataList(1);
 
     a.insertItem(0, "X");
 
-    b.applyUpdate(a.encodeStateAsUpdate());
+    b.applyUpdate(a.makeUpdate());
     b.insertItem(1, "Y");
 
-    a.applyUpdate(b.encodeStateAsUpdate(a.encodeStateVector()));
+    a.applyUpdate(b.makeUpdate(a.getStateVector()));
     a.insertItem(2, "Z");
 
     expect(getListAsString(a)).toBe("XYZ");
 
     const c = new YataList(2);
-    c.applyUpdate(a.encodeStateAsUpdate());
+    c.applyUpdate(a.makeUpdate());
     expect(getListAsString(c)).toBe("XYZ");
   });
 });

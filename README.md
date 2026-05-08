@@ -8,7 +8,7 @@ Run `make init` from the root dir to install the dependencies for both the Go se
 
 ### TURN server credentials
 
-If you're an instructor grading us, please visit [https://web.mit.edu/carolmou/www/6.5840/](https://web.mit.edu/carolmou/www/6.5840/) for the TURN server credentials. You should write these values into `web/.env.local`. This is just for the case your computer doesn't know how to deal with symmetric NATs.
+If you're an instructor grading us, please visit [https://web.mit.edu/carolmou/www/6.5840/](https://web.mit.edu/carolmou/www/6.5840/) (only MIT-accessible) for the TURN server credentials. You should write these values into `web/.env.local`. This is just for the case your computer doesn't know how to deal with symmetric NATs for the WebRTC protocol.
 
 ### Docker daemon
 

@@ -6,6 +6,10 @@ Run `make init` from the root dir to install the dependencies for both the Go se
 
 ## Running
 
+### TURN server credentials
+
+If you're an instructor grading us, please visit [https://web.mit.edu/carolmou/www/6.5840/](https://web.mit.edu/carolmou/www/6.5840/) for the TURN server credentials. You should write these values into `web/.env.local`. This is just for the case your computer doesn't know how to deal with symmetric NATs.
+
 ### Docker daemon
 
 The cluster runs in Docker, so make sure the Docker daemon is up before `make cluster`. Verify with:
@@ -23,6 +27,7 @@ From the root dir:
 ```
 make cluster
 ```
+
 That will spin-up 2 nodes. You can change this number by modifying the `docker-compose.yaml` file.
 
 Open the app at <http://localhost:8081> or <http://localhost:8082>. Both signalings serve the same frontend; rooms are coordinated through etcd so they don't need to know about each other directly.

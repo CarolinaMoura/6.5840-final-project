@@ -8,7 +8,7 @@ Run `make init` from the root dir to install the dependencies for both the Go se
 
 ### TURN server credentials
 
-If you're an instructor grading us, please visit [https://web.mit.edu/carolmou/www/6.5840/](https://web.mit.edu/carolmou/www/6.5840/) (only MIT-accessible) for the TURN server credentials. You should write these values into `web/.env.local`. This is just for the case your computer doesn't know how to deal with symmetric NATs for the WebRTC protocol.
+If you're an instructor grading us, please visit [https://web.mit.edu/carolmou/www/6.5840/](https://web.mit.edu/carolmou/www/6.5840/) (only MIT-accessible) for the TURN server credentials. You should write these values into `web/.env.local`. This is just for the case your network configuration doesn't know how to deal with symmetric NATs for the WebRTC protocol.
 
 ### Docker daemon
 
@@ -30,14 +30,14 @@ make cluster
 
 That will spin-up 2 nodes. You can change this number by modifying the `docker-compose.yaml` file.
 
-Open the app at <http://localhost:8081> or <http://localhost:8082>. Both signalings serve the same frontend; rooms are coordinated through etcd so they don't need to know about each other directly.
+Open the app at <http://localhost:8081> or <http://localhost:8082>. Both signalings serve the same frontend.
 
-Each signaling reads `ADVERTISE_ADDR` (the host:port browsers should use to reach it) from its environment and registers itself in etcd under `server/<addr>` with a 10-second lease. The lease auto-renews while the process is alive and expires shortly after a crash, so the live set updates itself.
+Each signaling reads `ADVERTISE_ADDR` (the host:port browsers should use to reach it) from its environment and registers itself under `server/<addr>` with a 10-second lease. The lease auto-renews while the process is alive and expires shortly after a crash, so the live set updates itself.
 
 ## Architecture
 
-- **Room creation (`POST /api/rooms`)**: picks a random live signaling from `server/*`, writes `room/<id> -> <addr>` in etcd, returns `{room, server}` to the client.
-- **Room lookup (`GET /api/rooms/:room`)**: reads `room/<id>` from etcd. If the recorded server is no longer in the live set (lease expired), reassigns the room to a live signaling and returns the new addr.
+- **Room creation (`POST /api/rooms`)**: picks a random live signaling from `server/*`, writes `room/<id> -> <addr>` in the db, returns `{room, server}` to the client.
+- **Room lookup (`GET /api/rooms/:room`)**: reads `room/<id>` from the db. If the recorded server is no longer in the live set (lease expired), reassigns the room to a live signaling and returns the new addr.
 - **Joining (`GET /api/ws/rooms/:room`)**: a `wsGate` middleware validates the room and rejects with 404 if this signaling isn't the assigned one; otherwise the WS is upgraded.
 - **Client reconnect**: on WS close, the client re-fetches `/api/rooms/:room` (which reassigns the server if previous died) and reconnects with exponential backoff. The RTC instance is kept alive across signaling drops so existing WebRTC peer connections survive.
 

@@ -5,6 +5,19 @@ function getListAsString(list: YataList): string {
   return list.getItems().map(String).join("");
 }
 
+/**
+ * Clones a value by serializing it to JSON and then parsing it back.
+ * This is used in the tests to create deep copies of the updates since
+ * they are live references on the source peer's list. This does NOT matter
+ * in the P2P sync protocol since the updates are always encoded and sent over the wire,
+ * NOT passed to another peer locally.
+ * @param value - The value to clone.
+ * @returns The cloned value.
+ */
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value));
+}
+
 describe("YataList", () => {
   it("basic insert", () => {
     const list = new YataList(0);
@@ -52,7 +65,7 @@ describe("YataList", () => {
     list1.insertItem(1, "A");
 
     const update = list0.makeUpdate();
-    list1.applyUpdate(update);
+    list1.applyUpdate(clone(update));
 
     expect(getListAsString(list1)).toBe("YATA");
   });
@@ -63,12 +76,12 @@ describe("YataList", () => {
     a.insertItem(1, "I");
 
     const b = new YataList(1);
-    b.applyUpdate(a.makeUpdate());
+    b.applyUpdate(clone(a.makeUpdate()));
     expect(getListAsString(b)).toBe("HI");
 
     a.insertItem(2, "!");
     const delta = a.makeUpdate(b.getStateVector());
-    b.applyUpdate(delta);
+    b.applyUpdate(clone(delta));
 
     expect(getListAsString(b)).toBe("HI!");
   });
@@ -82,8 +95,8 @@ describe("YataList", () => {
 
     const aSV = a.getStateVector();
     const bSV = b.getStateVector();
-    a.applyUpdate(b.makeUpdate(aSV));
-    b.applyUpdate(a.makeUpdate(bSV));
+    a.applyUpdate(clone(b.makeUpdate(aSV)));
+    b.applyUpdate(clone(a.makeUpdate(bSV)));
 
     expect(a.length()).toBe(2);
     expect(b.length()).toBe(2);
@@ -94,11 +107,11 @@ describe("YataList", () => {
     const a = new YataList(0);
     const b = new YataList(1);
     a.insertItem(0, "X");
-    b.applyUpdate(a.makeUpdate());
+    b.applyUpdate(clone(a.makeUpdate()));
     expect(getListAsString(b)).toBe("X");
 
     a.deleteItem(0);
-    b.applyUpdate(a.makeUpdate(b.getStateVector()));
+    b.applyUpdate(clone(a.makeUpdate(b.getStateVector())));
     b.applyTombstones(a.getTombstoneKeys());
     expect(b.length()).toBe(0);
   });
@@ -109,16 +122,16 @@ describe("YataList", () => {
 
     a.insertItem(0, "X");
 
-    b.applyUpdate(a.makeUpdate());
+    b.applyUpdate(clone(a.makeUpdate()));
     b.insertItem(1, "Y");
 
-    a.applyUpdate(b.makeUpdate(a.getStateVector()));
+    a.applyUpdate(clone(b.makeUpdate(a.getStateVector())));
     a.insertItem(2, "Z");
 
     expect(getListAsString(a)).toBe("XYZ");
 
     const c = new YataList(2);
-    c.applyUpdate(a.makeUpdate());
+    c.applyUpdate(clone(a.makeUpdate()));
     expect(getListAsString(c)).toBe("XYZ");
   });
 });

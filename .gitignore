@@ -18,4 +18,3 @@ web/.env.*.local
 .gomodcache
 
 # Persistance
-data

@@ -9,6 +9,7 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { startSignaling } from "../lib/signaling";
 import { RTC } from "../lib/rtc";
 import { TextPeer } from "../lib/textPeer";
+import { ReconnectingOverlay } from "../components/ReconnectingOverlay";
 
 /*
 Each peer broadcasts a single batched "update" message to every connected peer at
@@ -21,6 +22,20 @@ const BROADCAST_INTERVAL_MIN_MS = 200;
 const BROADCAST_INTERVAL_MAX_MS = 10_000;
 const BROADCAST_INTERVAL_STEP_MS = 200;
 const BROADCAST_INTERVAL_DEFAULT_MS = 2_000;
+
+const SERVER_BADGE_STYLE: CSSProperties = {
+  position: "fixed",
+  top: "0.75rem",
+  right: "0.75rem",
+  padding: "0.25rem 0.5rem",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSize: "0.75rem",
+  backgroundColor: "#f0f0f0",
+  border: "1px solid #d0d0d0",
+  borderRadius: "0.25rem",
+  color: "#444",
+  zIndex: 10,
+};
 
 const TEXTAREA_STYLE: CSSProperties = {
   width: "100%",
@@ -91,6 +106,8 @@ export default function Room() {
   const [text, setText] = useState("");
   const [ready, setReady] = useState(false);
   const [events, setEvents] = useState<string[]>([]);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [server, setServer] = useState<string | null>(null);
   const [broadcastIntervalMs, setBroadcastIntervalMs] = useState(
     BROADCAST_INTERVAL_DEFAULT_MS,
   );
@@ -145,6 +162,8 @@ export default function Room() {
       initialServer,
       onLookupFailed: () => navigate("/"),
       onStatus: (msg) => setEvents((prev) => [...prev, msg]),
+      onReconnecting: setReconnecting,
+      onServer: setServer,
     });
   }, [room, navigate, initialServer, rtc]);
 
@@ -200,6 +219,11 @@ export default function Room() {
 
   return (
     <main>
+      {server && (
+        <div style={SERVER_BADGE_STYLE} title={server}>
+          srv …{server.slice(-4)}
+        </div>
+      )}
       <button onClick={() => navigate("/")}> ⬅️ Jair & Carol</button>
       <h1>Room {room}</h1>
       <p>{ready ? "Connected" : "Connecting to signaling…"}</p>
@@ -231,6 +255,7 @@ export default function Room() {
           <li key={i}>{e}</li>
         ))}
       </ul>
+      {reconnecting && <ReconnectingOverlay />}
     </main>
   );
 }

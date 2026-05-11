@@ -3,3 +3,9 @@ body {
   margin: 0;
   padding: 2rem;
 }
+
+@keyframes reconnecting-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

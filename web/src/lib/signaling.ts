@@ -8,6 +8,11 @@ interface StartOpts {
   onLookupFailed?: () => void;
   // Connection-lifecycle messages for the UI: "Connected to ...", etc.
   onStatus?: (msg: string) => void;
+  // Fires true once the signaling socket drops after a successful connect,
+  // and false once it's back up. Never fires during the initial connect.
+  onReconnecting?: (reconnecting: boolean) => void;
+  // Fires with the server host each time a signaling socket opens.
+  onServer?: (server: string) => void;
 }
 
 async function lookupRoom(room: string): Promise<string> {
@@ -57,6 +62,8 @@ export function startSignaling(
   let backoff = 500;
   let attempt = 0;
   let lastServer: string | null = null;
+  let hasConnected = false;
+  let reconnecting = false;
 
   async function connect() {
     let server = attempt === 0 ? opts.initialServer : undefined;
@@ -88,12 +95,22 @@ export function startSignaling(
         opts.onStatus?.(`Connected to ${target}`);
       }
       lastServer = target;
+      hasConnected = true;
+      opts.onServer?.(target);
+      if (reconnecting) {
+        reconnecting = false;
+        opts.onReconnecting?.(false);
+      }
     });
     ws.addEventListener("close", () => {
       ws = null;
       if (cancelled) return;
       console.log("WebSocket closed with ", target, ", scheduling reconnect");
       opts.onStatus?.(`Disconnected from ${target}, reconnecting…`);
+      if (hasConnected && !reconnecting) {
+        reconnecting = true;
+        opts.onReconnecting?.(true);
+      }
       scheduleReconnect();
     });
   }

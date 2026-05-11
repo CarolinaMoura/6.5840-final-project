@@ -4,6 +4,7 @@
   "description": "Run `make init` from the root dir to install the dependencies for both the Go server and the React frontend.",
   "main": "index.js",
   "scripts": {
+    "postinstall": "npm install --prefix web",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
